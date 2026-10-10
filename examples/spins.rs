@@ -12,6 +12,7 @@ fn main() {
     for level in [1, 3, 5, 7, 10] {
         let cfg = Config::difficulty(level, Objective::Attack);
         let (mut tsd, mut tst, mut quads, mut sent, mut deaths) = (0, 0, 0, 0, 0);
+        let (mut chained, mut broken) = (0, 0);
         for seed in 0..SEEDS {
             let mut game = Game::new(Rules::versus(), seed);
             let (mut b2b, mut combo) = (false, -1);
@@ -20,7 +21,11 @@ fn main() {
                 let root = Root { board: game.board, current: game.current, hold: game.hold, can_hold: true, queue: &queue, b2b: game.b2b, combo: game.combo, pending: 0, bag: game.bag_mask() };
                 let Some(p) = suggest(&root, &game.rules, &cfg) else { break };
                 let info = game.play(&p);
+                let was_b2b = b2b;
                 sent += attack(info.lines, info.spin, &mut b2b, &mut combo, info.perfect_clear);
+                if info.lines > 0 && was_b2b {
+                    if b2b { chained += 1 } else { broken += 1 }
+                }
                 quads += (info.lines == 4) as u32;
                 if info.spin == Spin::Full {
                     tsd += (info.lines == 2) as u32;
@@ -34,10 +39,12 @@ fn main() {
         }
         let n = SEEDS as f64;
         println!(
-            "level {level:>2}: TSD {:>5.1}  TST {:>4.1}  quads {:>5.1}  attack/piece {:.3}  died {deaths}/{SEEDS}",
+            "level {level:>2}: TSD {:>5.1}  TST {:>4.1}  quads {:>5.1}  B2B clears {:>5.1}  B2B breaks {:>4.1}  attack/piece {:.3}  died {deaths}/{SEEDS}",
             tsd as f64 / n,
             tst as f64 / n,
             quads as f64 / n,
+            chained as f64 / n,
+            broken as f64 / n,
             sent as f64 / (n * PIECES as f64),
         );
     }

@@ -2,8 +2,11 @@
 
 Usage: python train/train.py data/selfplay.bin [more.bin ...] --out nets/value.bin
 
-Input rows are little-endian f32: INPUTS features then the target (discounted return), as written
-by `cargo run --release --example selfplay`. The net (INPUTS -> 64 -> 32 -> 1, ReLU) and the export
+Input rows are little-endian f32: INPUTS features, discounted return, hand eval score, and match
+outcome (+1/-1, faded by distance to the end), as written by `cargo run --release --example selfplay`.
+The net learns the outcome, i.e. how likely this board is to win; the engine adds it to the hand eval
+times a weight. (Learning future attack instead taught it that tall stacks are good: they hold lots
+of lines to clear, and deaths were too rare in the data to outweigh that.) The net (INPUTS -> 64 -> 32 -> 1, ReLU) and the export
 layout must match src/net.rs: scale, w1 [64 x INPUTS], b1, w2 [32 x 64], b2, w3 [32], b3.
 """
 
@@ -25,9 +28,9 @@ def main():
     ap.add_argument("--batch", type=int, default=4096)
     args = ap.parse_args()
 
-    rows = np.concatenate([np.fromfile(p, dtype="<f4").reshape(-1, INPUTS + 1) for p in args.data])
-    x, y = rows[:, :INPUTS], rows[:, INPUTS]
-    scale = float(np.abs(y).std()) or 1.0
+    rows = np.concatenate([np.fromfile(p, dtype="<f4").reshape(-1, INPUTS + 3) for p in args.data])
+    x, y = rows[:, :INPUTS], rows[:, INPUTS + 2]
+    scale = 1.0  # outcome is already in -1..1
     print(f"{len(rows)} positions, target mean {y.mean():.2f} std {y.std():.2f}, scaling by {scale:.2f}")
 
     rng = np.random.default_rng(0)

@@ -1,0 +1,4 @@
+# Native builds (tuning, self-play, benchmarks) use every instruction this CPU has. Only the
+# Windows target is listed, so the browser's wasm32 build stays portable.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-cpu=native"]

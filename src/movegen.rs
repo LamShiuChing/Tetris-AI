@@ -1,5 +1,3 @@
-use std::collections::{HashMap, HashSet, VecDeque};
-
 use crate::board::Board;
 use crate::game::{Gravity, Rules};
 use crate::piece::Piece;
@@ -43,35 +41,72 @@ struct State {
     rotated: bool,
 }
 
-/// BFS over every input sequence from spawn; one result per distinct (cells, spin).
+/// BFS over every input sequence from spawn; one result per distinct (cells, spin), each with the
+/// inputs that reach it.
 pub fn find_placements(board: &Board, piece: Piece, rules: &Rules) -> Vec<Placement> {
+    search(board, piece, rules, true)
+}
+
+/// `find_placements` without the input sequences (left empty): the search only needs those for
+/// the move it actually plays, and building them for every node is most of the cost.
+pub fn find_placements_fast(board: &Board, piece: Piece, rules: &Rules) -> Vec<Placement> {
+    search(board, piece, rules, false)
+}
+
+// Every reachable state fits in a small array: pivot x in -3..13, y in -4..40, 4 rotations,
+// rotated or not. Arrays instead of hash maps keep the BFS allocation-free and cache-friendly.
+const XS: usize = 16;
+const YS: usize = 44;
+const STATES: usize = XS * YS * 4 * 2;
+
+fn index(s: State) -> Option<usize> {
+    let (x, y) = (s.x as i32 + 3, s.y as i32 + 4);
+    ((0..XS as i32).contains(&x) && (0..YS as i32).contains(&y))
+        .then(|| (((x as usize * YS + y as usize) * 4 + s.rot as usize) * 2) + s.rotated as usize)
+}
+
+fn search(board: &Board, piece: Piece, rules: &Rules, want_inputs: bool) -> Vec<Placement> {
     let (x, y) = rules.spawn;
     if board.collides(piece, x, y, 0) {
         return vec![];
     }
     // ponytail: ignores IRS and the 15 lock-reset cap; BFS paths are short. Add both if 20G paths get cut off.
     let start = settle(board, piece, rules.gravity, State { x, y, rot: 0, rotated: false });
-    let mut parent: HashMap<State, (State, Input)> = HashMap::new();
-    let mut seen = HashSet::from([start]);
-    let mut queue = VecDeque::from([start]);
-    let mut locked = HashSet::new();
+    let Some(start_i) = index(start) else { return vec![] };
+    let mut seen = [false; STATES];
+    // Only filled in when `want_inputs`: (parent state index, input that led here).
+    let mut parent = if want_inputs { vec![(u16::MAX, Input::Left); STATES] } else { vec![] };
+    let mut queue: Vec<State> = Vec::with_capacity(256);
+    let mut locked: Vec<u64> = Vec::with_capacity(64);
     let mut out = vec![];
+    seen[start_i] = true;
+    queue.push(start);
 
-    while let Some(s) = queue.pop_front() {
+    let mut head = 0;
+    while let Some(&s) = queue.get(head) {
+        head += 1;
         if board.collides(piece, s.x, s.y + 1, s.rot) {
             let spin = spin(board, piece, s);
             let mut cells = piece.cells(s.x, s.y, s.rot);
             cells.sort();
-            if locked.insert((cells, spin)) {
-                out.push(Placement { piece, x: s.x, y: s.y, rot: s.rot, spin, inputs: path(&parent, s) });
+            let key = cells.iter().fold(spin as u64, |k, &(cx, cy)| k << 10 | ((cx as u64) << 6 | (cy as i32 + 4) as u64));
+            if !locked.contains(&key) {
+                locked.push(key);
+                let inputs = if want_inputs { path(&parent, &queue, s) } else { vec![] };
+                out.push(Placement { piece, x: s.x, y: s.y, rot: s.rot, spin, inputs });
             }
         }
+        let si = index(s).unwrap() as u16;
         for input in [Input::Left, Input::Right, Input::Cw, Input::Ccw, Input::SoftDrop] {
-            if let Some(n) = step(board, piece, rules.gravity, s, input) {
-                if seen.insert(n) {
-                    parent.insert(n, (s, input));
-                    queue.push_back(n);
+            if let Some(n) = step(board, piece, rules.gravity, s, input)
+                && let Some(ni) = index(n)
+                && !seen[ni]
+            {
+                seen[ni] = true;
+                if want_inputs {
+                    parent[ni] = (si, input);
                 }
+                queue.push(n);
             }
         }
     }
@@ -149,11 +184,12 @@ pub(crate) fn t_spin(board: &Board, x: i8, y: i8, rot: u8) -> Spin {
     if a && b { Spin::Full } else { Spin::Mini }
 }
 
-fn path(parent: &HashMap<State, (State, Input)>, mut s: State) -> Vec<Input> {
+fn path(parent: &[(u16, Input)], _queue: &[State], s: State) -> Vec<Input> {
     let mut inputs = vec![];
-    while let Some(&(p, input)) = parent.get(&s) {
-        inputs.push(input);
-        s = p;
+    let mut i = index(s).unwrap();
+    while parent[i].0 != u16::MAX {
+        inputs.push(parent[i].1);
+        i = parent[i].0 as usize;
     }
     inputs.reverse();
     inputs
@@ -172,6 +208,25 @@ mod tests {
         for gravity in [Gravity::Zero, Gravity::TwentyG] {
             for (piece, n) in [(Piece::I, 17), (Piece::O, 9), (Piece::T, 34), (Piece::S, 17), (Piece::Z, 17), (Piece::J, 34), (Piece::L, 34)] {
                 assert_eq!(find_placements(&Board::default(), piece, &rules(gravity)).len(), n, "{piece:?} {gravity:?}");
+            }
+        }
+    }
+
+    /// The fast variant finds exactly the same placements, just without input sequences, and the
+    /// full variant's inputs really lead to each placement.
+    #[test]
+    fn fast_matches_full() {
+        let mut board = Board::default();
+        board.rows[39] = 0x3FF & !(1 << 1);
+        board.rows[38] = 0x3FF & !0b111;
+        board.rows[37] = 1;
+        for gravity in [Gravity::Zero, Gravity::TwentyG] {
+            for piece in Piece::ALL {
+                let full = find_placements(&board, piece, &rules(gravity));
+                let fast = find_placements_fast(&board, piece, &rules(gravity));
+                let key = |v: &[Placement]| v.iter().map(|p| (p.x, p.y, p.rot, p.spin)).collect::<Vec<_>>();
+                assert_eq!(key(&full), key(&fast), "{piece:?} {gravity:?}");
+                assert!(fast.iter().all(|p| p.inputs.is_empty()));
             }
         }
     }

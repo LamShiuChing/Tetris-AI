@@ -7,3 +7,8 @@ edition = "2024"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+
+[profile.release]
+# Whole-program optimization: slower builds, faster bots (tuning and self-play run for hours).
+lto = "fat"
+codegen-units = 1

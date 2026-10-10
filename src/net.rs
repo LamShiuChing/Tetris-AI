@@ -1,7 +1,7 @@
 //! Learned board evaluation: a small MLP over board features, trained on the GPU from self-play
-//! (train/train.py) and embedded from nets/value.bin. It predicts the discounted future return
-//! (attack sent minus garbage taken, minus a big penalty for topping out) in the same units as
-//! the search's rewards, so it can stand in for the hand-weighted `eval`.
+//! (train/train.py) and embedded from nets/value.bin. It predicts the match outcome from a board
+//! (+1 = this side wins, -1 = loses), and the search adds it, times `Config::net_weight`, to the
+//! hand-weighted eval.
 
 use std::sync::OnceLock;
 
