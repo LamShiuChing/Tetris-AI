@@ -9,7 +9,7 @@ use crate::movegen::{Placement, Spin, find_placements};
 use crate::piece::Piece;
 
 /// Board evaluation weights, in units of 100 game points (a single = 1, a quad = 8).
-/// Hand-picked for now; these are what step 4 tunes.
+/// Defaults come from `examples/tune.rs` (cross-entropy, 15 generations, MonochromeRush scoring).
 #[derive(Clone, Debug)]
 pub struct Weights {
     pub holes: f32,
@@ -26,7 +26,7 @@ pub struct Weights {
 
 impl Default for Weights {
     fn default() -> Self {
-        Weights { holes: -4.0, bumpiness: -0.4, height: -0.05, danger: -1.0, well: 0.7, tsd: 4.0, tst: 6.0, b2b: 1.0 }
+        Weights { holes: -5.41, bumpiness: -0.76, height: 0.19, danger: -2.42, well: 1.03, tsd: 6.81, tst: 3.45, b2b: 2.82 }
     }
 }
 
