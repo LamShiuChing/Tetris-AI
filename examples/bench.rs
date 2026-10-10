@@ -9,7 +9,7 @@ const SEED0: u64 = 1_000_000;
 
 fn main() {
     let games: u64 = std::env::args().nth(1).map_or(32, |s| s.parse().unwrap());
-    let hand = Weights { holes: -4.0, bumpiness: -0.4, height: -0.05, danger: -1.0, well: 0.7, tsd: 4.0, tst: 6.0, b2b: 1.0 };
+    let hand = Weights { holes: -4.0, bumpiness: -0.4, height: -0.05, danger: -1.0, well: 0.7, tsd: 4.0, tst: 6.0, b2b: 1.0, setup: 0.0 };
     let configs = [
         ("hand-picked weights", Config { weights: hand, ..Config::default() }),
         ("default weights", Config::default()),

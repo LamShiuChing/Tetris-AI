@@ -7,6 +7,7 @@ use crate::board::{Board, HEIGHT, WIDTH};
 use crate::game::{Game, Rules, attack, points};
 use crate::movegen::{Placement, Spin, find_placements};
 use crate::piece::Piece;
+use crate::setups;
 
 /// Board evaluation weights, in units of 100 game points (a single = 1, a quad = 8).
 /// Defaults come from `examples/tune.rs` (cross-entropy, 15 generations, MonochromeRush scoring).
@@ -22,11 +23,13 @@ pub struct Weights {
     pub tsd: f32,
     pub tst: f32,
     pub b2b: f32,
+    /// Reward for building a known opener shape (`setups`), banked as progress is made.
+    pub setup: f32,
 }
 
 impl Default for Weights {
     fn default() -> Self {
-        Weights { holes: -5.41, bumpiness: -0.76, height: 0.19, danger: -2.42, well: 1.03, tsd: 6.81, tst: 3.45, b2b: 2.82 }
+        Weights { holes: -5.41, bumpiness: -0.76, height: 0.19, danger: -2.42, well: 1.03, tsd: 6.81, tst: 3.45, b2b: 2.82, setup: 0.0 }
     }
 }
 
@@ -35,15 +38,15 @@ impl Weights {
     /// multiplies score by level), which makes a versus bot stack up without clearing.
     /// Hand-picked until a versus tuner (bot-vs-bot win rate) exists.
     pub fn versus() -> Self {
-        Weights { holes: -4.0, bumpiness: -0.4, height: -0.05, danger: -1.0, well: 0.7, tsd: 4.0, tst: 6.0, b2b: 1.0 }
+        Weights { holes: -4.0, bumpiness: -0.4, height: -0.05, danger: -1.0, well: 0.7, tsd: 4.0, tst: 6.0, b2b: 1.0, setup: 4.0 }
     }
 
     pub fn to_vec(&self) -> Vec<f32> {
-        vec![self.holes, self.bumpiness, self.height, self.danger, self.well, self.tsd, self.tst, self.b2b]
+        vec![self.holes, self.bumpiness, self.height, self.danger, self.well, self.tsd, self.tst, self.b2b, self.setup]
     }
 
     pub fn from_slice(v: &[f32]) -> Self {
-        Weights { holes: v[0], bumpiness: v[1], height: v[2], danger: v[3], well: v[4], tsd: v[5], tst: v[6], b2b: v[7] }
+        Weights { holes: v[0], bumpiness: v[1], height: v[2], danger: v[3], well: v[4], tsd: v[5], tst: v[6], b2b: v[7], setup: v[8] }
     }
 }
 
@@ -84,6 +87,8 @@ impl Config {
         let i = level.clamp(1, 10) as usize - 1;
         let spin_skill = [0.0, 0.0, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.0, 1.0][i];
         let well_skill = [0.0, 0.0, 0.3, 0.6, 0.8, 1.0, 1.0, 1.0, 1.0, 1.0][i];
+        // Named openers are expert knowledge: only the top three levels know them.
+        let setup_skill = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.6, 1.0, 1.0][i];
         let base = match objective {
             Objective::Attack => Weights::versus(),
             Objective::Points => Weights::default(),
@@ -98,6 +103,7 @@ impl Config {
                 tst: base.tst * spin_skill,
                 b2b: base.b2b * spin_skill,
                 well: base.well * well_skill,
+                setup: base.setup * setup_skill,
                 ..base
             },
             salt: 0,
@@ -126,6 +132,8 @@ struct Node {
     combo: i32,
     reward: f32,
     value: f32,
+    /// Opener-shape progress (`setups::progress`), tracked only when `weights.setup` is on.
+    progress: f32,
     /// Index of the root placement this line started with.
     first: usize,
 }
@@ -141,6 +149,7 @@ pub fn suggest(root: &Root, rules: &Rules, cfg: &Config) -> Option<Placement> {
         combo: root.combo,
         reward: 0.0,
         value: 0.0,
+        progress: if cfg.weights.setup != 0.0 { setups::progress(&root.board, available(&seq, 0, root.hold)) } else { 0.0 },
         first: 0,
     }];
     let mut best = None;
@@ -163,6 +172,18 @@ pub fn suggest(root: &Root, rules: &Rules, cfg: &Config) -> Option<Placement> {
                             2.0 * attack(lines, p.spin, &mut b2b, &mut combo, pc) as f32
                         }
                     };
+                    // Bank opener progress as it's made, counting only shapes the visible pieces
+                    // can still finish. Losing progress without a clear (wasting a needed piece,
+                    // breaking the shape) gives it back; the clear that fires its spin doesn't.
+                    let mut progress = node.progress;
+                    let mut gain = gain;
+                    if cfg.weights.setup != 0.0 {
+                        progress = setups::progress(&board, available(&seq, next, hold));
+                        let delta = progress - node.progress;
+                        if delta > 0.0 || lines == 0 {
+                            gain += cfg.weights.setup * delta;
+                        }
+                    }
                     let reward = node.reward + gain;
                     let mut value = reward + eval(&board, b2b, &cfg.weights);
                     if cfg.noise > 0.0 {
@@ -174,7 +195,7 @@ pub fn suggest(root: &Root, rules: &Rules, cfg: &Config) -> Option<Placement> {
                     } else {
                         node.first
                     };
-                    children.push(Node { board, hold, next, b2b, combo, reward, value, first });
+                    children.push(Node { board, hold, next, b2b, combo, reward, value, progress, first });
                 }
             }
         }
@@ -206,6 +227,11 @@ fn options(n: &Node, seq: &[Piece], can_hold: bool) -> Vec<(Piece, Option<Piece>
         }
     }
     out
+}
+
+/// Pieces still to come in the visible sequence from `next`, plus the held piece.
+fn available(seq: &[Piece], next: usize, hold: Option<Piece>) -> u8 {
+    setups::piece_mask(seq.get(next..).unwrap_or(&[]).iter().copied().chain(hold))
 }
 
 /// Deterministic pseudo-random 0..1 from the board, so noisy play stays reproducible.
