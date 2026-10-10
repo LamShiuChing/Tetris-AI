@@ -30,11 +30,35 @@ impl Board {
     /// Writes the piece and clears full rows, returning lines cleared.
     /// Cells above the top are discarded, as in `Game.lock`.
     pub fn lock(&mut self, piece: Piece, x: i8, y: i8, rot: u8) -> u32 {
+        self.place(piece, x, y, rot);
+        self.clear_full()
+    }
+
+    pub fn place(&mut self, piece: Piece, x: i8, y: i8, rot: u8) {
         for (cx, cy) in piece.cells(x, y, rot) {
             if cy >= 0 {
                 self.rows[cy as usize] |= 1 << cx;
             }
         }
+    }
+
+    /// Bit y set = row y is full.
+    pub fn full_rows(&self) -> u64 {
+        (0..HEIGHT as usize).filter(|&y| self.rows[y] == FULL_ROW).fold(0, |m, y| m | 1 << y)
+    }
+
+    /// Pushes `n` garbage rows (full except `hole`) in from the bottom. Returns false if
+    /// filled cells were pushed off the top.
+    pub fn push_garbage(&mut self, n: usize, hole: i8) -> bool {
+        let n = n.min(HEIGHT as usize);
+        let fits = self.rows[..n].iter().all(|&r| r == 0);
+        self.rows.copy_within(n.., 0);
+        self.rows[HEIGHT as usize - n..].fill(FULL_ROW & !(1 << hole));
+        fits
+    }
+
+    /// Removes full rows, returning how many.
+    pub fn clear_full(&mut self) -> u32 {
         let mut dst = HEIGHT as usize;
         for src in (0..HEIGHT as usize).rev() {
             if self.rows[src] != FULL_ROW {

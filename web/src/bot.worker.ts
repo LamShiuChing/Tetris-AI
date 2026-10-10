@@ -1,0 +1,36 @@
+// Runs the bot's search off the main thread so planning never stalls a frame.
+import { loadEngine } from './engine';
+
+export interface PlanRequest {
+  id: number;
+  rows: Int32Array;
+  current: number;
+  hold: number;
+  canHold: boolean;
+  queue: number[];
+  b2b: boolean;
+  combo: number;
+  difficulty: number;
+  /** Varies the bot's mistakes so two bots at one level don't mirror each other. */
+  salt: number;
+}
+
+/** [piece, x, y, rot, spin, n, inputs...] or empty when every placement tops out. */
+export interface PlanResponse {
+  id: number;
+  out: number[];
+}
+
+const engine = loadEngine();
+/** The worker global, typed via the DOM lib's Worker (its postMessage takes no target origin). */
+const ctx = self as unknown as Worker;
+
+ctx.onmessage = async (e: MessageEvent<PlanRequest>) => {
+  const w = await engine;
+  const r = e.data;
+  new Uint16Array(w.memory.buffer, w.board_ptr(), 40).set(r.rows);
+  new Uint8Array(w.memory.buffer, w.queue_ptr(), r.queue.length).set(r.queue);
+  const len = w.plan(r.current, r.hold < 0 ? 7 : r.hold, r.canHold ? 1 : 0, r.queue.length, r.b2b ? 1 : 0, r.combo, r.difficulty, r.salt);
+  const out = Array.from(new Int8Array(w.memory.buffer, w.out_ptr(), len));
+  ctx.postMessage({ id: r.id, out } satisfies PlanResponse);
+};

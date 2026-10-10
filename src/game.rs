@@ -27,6 +27,35 @@ impl Rules {
         let gravity = if level > 10 { Gravity::TwentyG } else { Gravity::Zero };
         Rules { gravity, spawn: (4, 18), preview: 5, hold: true }
     }
+
+    /// Stackfall versus: same board and spawn, low gravity the bot treats as zero.
+    pub fn versus() -> Self {
+        Rules { gravity: Gravity::Zero, spawn: (4, 18), preview: 5, hold: true }
+    }
+}
+
+/// Extra lines sent for 0, 1, 2, ... consecutive clears.
+const COMBO_ATTACK: [u32; 13] = [0, 0, 1, 1, 1, 2, 2, 3, 3, 4, 4, 4, 5];
+
+/// Garbage lines a clear sends in Stackfall versus (guideline-style table). Updates `b2b` and
+/// `combo`: any lock without a clear resets combo; a non-spin, non-quad clear breaks back-to-back.
+pub fn attack(lines: u32, spin: Spin, b2b: &mut bool, combo: &mut i32, perfect_clear: bool) -> u32 {
+    if lines == 0 {
+        *combo = -1;
+        return 0;
+    }
+    let base = match (spin, lines) {
+        (Spin::Full, n) => 2 * n,
+        (Spin::Mini, 2) => 1,
+        (Spin::Mini, _) => 0,
+        (Spin::None, 4) => 4,
+        (Spin::None, n) => n - 1,
+    };
+    let difficult = lines == 4 || spin != Spin::None;
+    let b2b_bonus = (difficult && *b2b) as u32;
+    *b2b = difficult;
+    *combo += 1;
+    base + b2b_bonus + COMBO_ATTACK[(*combo as usize).min(12)] + if perfect_clear { 10 } else { 0 }
 }
 
 /// MonochromeRush `calculateScore` before the level multiplier: base table, x1.5 when
@@ -125,17 +154,17 @@ impl Game {
 }
 
 /// 7-bag with Fisher-Yates over a xorshift RNG, so games replay from a seed.
-struct Bag {
+pub(crate) struct Bag {
     rng: u64,
     pieces: Vec<Piece>,
 }
 
 impl Bag {
-    fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         Bag { rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1, pieces: vec![] }
     }
 
-    fn next(&mut self) -> Piece {
+    pub(crate) fn next(&mut self) -> Piece {
         if self.pieces.is_empty() {
             self.pieces = Piece::ALL.to_vec();
             for i in (1..7).rev() {

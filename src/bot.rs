@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use crate::board::{Board, HEIGHT, WIDTH};
-use crate::game::{Game, Rules, points};
+use crate::game::{Game, Rules, attack, points};
 use crate::movegen::{Placement, Spin, find_placements};
 use crate::piece::Piece;
 
@@ -31,6 +31,13 @@ impl Default for Weights {
 }
 
 impl Weights {
+    /// For Stackfall versus. The tuned defaults learned to *reward* height (MonochromeRush
+    /// multiplies score by level), which makes a versus bot stack up without clearing.
+    /// Hand-picked until a versus tuner (bot-vs-bot win rate) exists.
+    pub fn versus() -> Self {
+        Weights { holes: -4.0, bumpiness: -0.4, height: -0.05, danger: -1.0, well: 0.7, tsd: 4.0, tst: 6.0, b2b: 1.0 }
+    }
+
     pub fn to_vec(&self) -> Vec<f32> {
         vec![self.holes, self.bumpiness, self.height, self.danger, self.well, self.tsd, self.tst, self.b2b]
     }
@@ -40,6 +47,15 @@ impl Weights {
     }
 }
 
+/// What a clear is worth to the search.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Objective {
+    /// MonochromeRush score (points / 100).
+    Points,
+    /// Stackfall versus garbage sent (x2, so a quad is worth 8 like in `Points`).
+    Attack,
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     /// Nodes kept per depth.
@@ -47,11 +63,31 @@ pub struct Config {
     /// Pieces looked ahead, capped by the visible queue.
     pub depth: usize,
     pub weights: Weights,
+    pub objective: Objective,
+    /// Random 0..noise added to every node's value; makes weaker levels misjudge like a human.
+    pub noise: f32,
+    /// Seeds the noise, so two bots at the same level make different mistakes.
+    pub salt: u64,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { width: 64, depth: 6, weights: Weights::default() }
+        Config { width: 64, depth: 6, weights: Weights::default(), objective: Objective::Points, noise: 0.0, salt: 0 }
+    }
+}
+
+impl Config {
+    /// Versus bot strength, 1 (beginner) ..= 10 (full search, no mistakes).
+    pub fn difficulty(level: u32) -> Self {
+        let i = level.clamp(1, 10) as usize - 1;
+        Config {
+            width: [1, 1, 2, 4, 8, 16, 24, 32, 48, 64][i],
+            depth: [1, 1, 2, 2, 3, 4, 5, 6, 6, 6][i],
+            noise: [8.0, 5.0, 3.5, 2.5, 1.5, 0.8, 0.4, 0.2, 0.1, 0.0][i],
+            objective: Objective::Attack,
+            weights: Weights::versus(),
+            salt: 0,
+        }
     }
 }
 
@@ -106,8 +142,18 @@ pub fn suggest(root: &Root, rules: &Rules, cfg: &Config) -> Option<Placement> {
                         continue;
                     }
                     let (mut b2b, mut combo) = (node.b2b, node.combo);
-                    let reward = node.reward + points(lines, p.spin, &mut b2b, &mut combo) / 100.0;
-                    let value = reward + eval(&board, b2b, &cfg.weights);
+                    let gain = match cfg.objective {
+                        Objective::Points => points(lines, p.spin, &mut b2b, &mut combo) / 100.0,
+                        Objective::Attack => {
+                            let pc = lines > 0 && board.is_empty();
+                            2.0 * attack(lines, p.spin, &mut b2b, &mut combo, pc) as f32
+                        }
+                    };
+                    let reward = node.reward + gain;
+                    let mut value = reward + eval(&board, b2b, &cfg.weights);
+                    if cfg.noise > 0.0 {
+                        value += cfg.noise * jitter(&board, cfg.salt);
+                    }
                     let first = if depth == 0 {
                         first_moves.push(p);
                         first_moves.len() - 1
@@ -146,6 +192,12 @@ fn options(n: &Node, seq: &[Piece], can_hold: bool) -> Vec<(Piece, Option<Piece>
         }
     }
     out
+}
+
+/// Deterministic pseudo-random 0..1 from the board, so noisy play stays reproducible.
+fn jitter(board: &Board, salt: u64) -> f32 {
+    let h = board.rows.iter().fold(0xCBF2_9CE4_8422_2325u64 ^ salt, |h, &r| (h ^ r as u64).wrapping_mul(0x100_0000_01B3));
+    (h >> 40) as f32 / (1u64 << 24) as f32
 }
 
 /// Anything in the spawn area means the next piece can't appear.
@@ -264,6 +316,29 @@ mod tests {
         let root = Root { board, current: Piece::T, hold: None, can_hold: true, queue: &[Piece::I, Piece::O], b2b: false, combo: -1 };
         let p = suggest(&root, &Rules::monochrome_rush(1), &Config::default()).unwrap();
         assert_eq!((p.piece, p.spin), (Piece::T, Spin::Full));
+    }
+
+    /// Versus bots keep their stack low (garbage is coming). Score-tuned weights average ~6 rows
+    /// at level 7+ and ~7.5 at level 4, so they fail this.
+    #[test]
+    fn versus_levels_stack_low() {
+        for (level, max_avg) in [(4, 7.0), (7, 5.0), (10, 5.0)] {
+            let cfg = Config::difficulty(level);
+            let (mut sum, mut n) = (0, 0);
+            for seed in 0..2 {
+                let mut game = Game::new(Rules::versus(), seed);
+                for _ in 0..200 {
+                    let queue: Vec<_> = game.queue.iter().copied().collect();
+                    let root = Root { board: game.board, current: game.current, hold: game.hold, can_hold: true, queue: &queue, b2b: game.b2b, combo: game.combo };
+                    game.play(&suggest(&root, &game.rules, &cfg).unwrap());
+                    assert!(!game.over, "level {level} topped out");
+                    sum += 40 - game.board.rows.iter().position(|&r| r != 0).unwrap_or(40);
+                    n += 1;
+                }
+            }
+            let avg = sum as f32 / n as f32;
+            assert!(avg <= max_avg, "level {level} averaged {avg:.1} rows high");
+        }
     }
 
     /// Needs the SRS triple-twist kick (0, +2) under a two-block overhang.

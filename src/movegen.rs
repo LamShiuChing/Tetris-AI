@@ -127,16 +127,20 @@ fn settle(board: &Board, piece: Piece, gravity: Gravity, s: State) -> State {
     }
 }
 
-/// 3-corner rule, mirroring `Game.isTSpin`.
 fn spin(board: &Board, piece: Piece, s: State) -> Spin {
     if piece != Piece::T || !s.rotated {
         return Spin::None;
     }
-    let c = [(-1, -1), (1, -1), (-1, 1), (1, 1)].map(|(dx, dy)| board.occupied(s.x + dx, s.y + dy));
+    t_spin(board, s.x, s.y, s.rot)
+}
+
+/// 3-corner rule for a T at this pose whose last move was a rotation, mirroring MonochromeRush `Game.isTSpin`.
+pub(crate) fn t_spin(board: &Board, x: i8, y: i8, rot: u8) -> Spin {
+    let c = [(-1, -1), (1, -1), (-1, 1), (1, 1)].map(|(dx, dy)| board.occupied(x + dx, y + dy));
     if c.iter().filter(|&&b| b).count() < 3 {
         return Spin::None;
     }
-    let (a, b) = match s.rot {
+    let (a, b) = match rot {
         0 => (c[0], c[1]),
         1 => (c[1], c[3]),
         2 => (c[2], c[3]),
