@@ -17,7 +17,7 @@ fn main() {
             let (mut b2b, mut combo) = (false, -1);
             for _ in 0..PIECES {
                 let queue: Vec<_> = game.queue.iter().copied().collect();
-                let root = Root { board: game.board, current: game.current, hold: game.hold, can_hold: true, queue: &queue, b2b: game.b2b, combo: game.combo };
+                let root = Root { board: game.board, current: game.current, hold: game.hold, can_hold: true, queue: &queue, b2b: game.b2b, combo: game.combo, pending: 0, bag: game.bag_mask() };
                 let Some(p) = suggest(&root, &game.rules, &cfg) else { break };
                 let info = game.play(&p);
                 sent += attack(info.lines, info.spin, &mut b2b, &mut combo, info.perfect_clear);

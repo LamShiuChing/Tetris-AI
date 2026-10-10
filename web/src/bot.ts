@@ -107,6 +107,8 @@ export class Bot {
       salt: this.salt,
       twentyG,
       solo: physics.solo,
+      pending: snap.pending,
+      bag: snap.bag,
     });
     this.thinking = false;
     if (key !== this.plannedFor) return;

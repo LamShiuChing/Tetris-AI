@@ -5,8 +5,10 @@ use std::time::{Duration, Instant};
 
 use crate::board::{Board, HEIGHT, WIDTH};
 use crate::game::{Game, Rules, attack, points};
+use crate::live::GARBAGE_PER_LOCK;
 use crate::movegen::{Placement, Spin, find_placements};
 use crate::piece::Piece;
+use crate::net;
 use crate::setups;
 
 /// Board evaluation weights, in units of 100 game points (a single = 1, a quad = 8).
@@ -25,11 +27,13 @@ pub struct Weights {
     pub b2b: f32,
     /// Reward for building a known opener shape (`setups`), banked as progress is made.
     pub setup: f32,
+    /// Per incoming garbage line still uncancelled at the end of a line of play.
+    pub incoming: f32,
 }
 
 impl Default for Weights {
     fn default() -> Self {
-        Weights { holes: -5.41, bumpiness: -0.76, height: 0.19, danger: -2.42, well: 1.03, tsd: 6.81, tst: 3.45, b2b: 2.82, setup: 0.0 }
+        Weights { holes: -5.41, bumpiness: -0.76, height: 0.19, danger: -2.42, well: 1.03, tsd: 6.81, tst: 3.45, b2b: 2.82, setup: 0.0, incoming: 0.0 }
     }
 }
 
@@ -38,15 +42,15 @@ impl Weights {
     /// multiplies score by level), which makes a versus bot stack up without clearing.
     /// Hand-picked until a versus tuner (bot-vs-bot win rate) exists.
     pub fn versus() -> Self {
-        Weights { holes: -4.0, bumpiness: -0.4, height: -0.05, danger: -1.0, well: 0.7, tsd: 4.0, tst: 6.0, b2b: 1.0, setup: 4.0 }
+        Weights { holes: -4.0, bumpiness: -0.4, height: -0.05, danger: -1.0, well: 0.7, tsd: 4.0, tst: 6.0, b2b: 1.0, setup: 4.0, incoming: -1.0 }
     }
 
     pub fn to_vec(&self) -> Vec<f32> {
-        vec![self.holes, self.bumpiness, self.height, self.danger, self.well, self.tsd, self.tst, self.b2b, self.setup]
+        vec![self.holes, self.bumpiness, self.height, self.danger, self.well, self.tsd, self.tst, self.b2b, self.setup, self.incoming]
     }
 
     pub fn from_slice(v: &[f32]) -> Self {
-        Weights { holes: v[0], bumpiness: v[1], height: v[2], danger: v[3], well: v[4], tsd: v[5], tst: v[6], b2b: v[7], setup: v[8] }
+        Weights { holes: v[0], bumpiness: v[1], height: v[2], danger: v[3], well: v[4], tsd: v[5], tst: v[6], b2b: v[7], setup: v[8], incoming: v[9] }
     }
 }
 
@@ -71,11 +75,18 @@ pub struct Config {
     pub noise: f32,
     /// Seeds the noise, so two bots at the same level make different mistakes.
     pub salt: u64,
+    /// Plan around incoming garbage (versus). Beginners don't.
+    pub sees_garbage: bool,
+    /// Look one piece past the visible queue, averaging over what the 7-bag can still deal.
+    pub speculate: bool,
+    /// Score leaves with the learned value net (`net`) instead of the hand-weighted features,
+    /// when a trained net is embedded.
+    pub use_net: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { width: 64, depth: 6, weights: Weights::default(), objective: Objective::Points, noise: 0.0, salt: 0 }
+        Config { width: 64, depth: 6, weights: Weights::default(), objective: Objective::Points, noise: 0.0, salt: 0, sees_garbage: true, speculate: false, use_net: false }
     }
 }
 
@@ -107,6 +118,9 @@ impl Config {
                 ..base
             },
             salt: 0,
+            sees_garbage: level >= 5,
+            speculate: level >= 9,
+            use_net: false,
         }
     }
 }
@@ -120,6 +134,11 @@ pub struct Root<'a> {
     pub queue: &'a [Piece],
     pub b2b: bool,
     pub combo: i32,
+    /// Incoming garbage lines not yet on the board (versus).
+    pub pending: u32,
+    /// Piece types still to come from the current 7-bag after the visible queue (bit = `Piece as u8`),
+    /// which any player can count. 0 = unknown: no speculation.
+    pub bag: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -130,6 +149,8 @@ struct Node {
     next: usize,
     b2b: bool,
     combo: i32,
+    /// Incoming garbage still pending along this line.
+    pending: u32,
     reward: f32,
     value: f32,
     /// Opener-shape progress (`setups::progress`), tracked only when `weights.setup` is on.
@@ -147,6 +168,7 @@ pub fn suggest(root: &Root, rules: &Rules, cfg: &Config) -> Option<Placement> {
         next: 0,
         b2b: root.b2b,
         combo: root.combo,
+        pending: if cfg.sees_garbage { root.pending } else { 0 },
         reward: 0.0,
         value: 0.0,
         progress: if cfg.weights.setup != 0.0 { setups::progress(&root.board, available(&seq, 0, root.hold)) } else { 0.0 },
@@ -159,43 +181,12 @@ pub fn suggest(root: &Root, rules: &Rules, cfg: &Config) -> Option<Placement> {
         for node in &layer {
             for (piece, hold, next) in options(node, &seq, depth > 0 || root.can_hold) {
                 for p in find_placements(&node.board, piece, rules) {
-                    let mut board = node.board;
-                    let lines = board.lock(p.piece, p.x, p.y, p.rot);
-                    if tops_out(&board, rules) {
-                        continue;
-                    }
-                    let (mut b2b, mut combo) = (node.b2b, node.combo);
-                    let gain = match cfg.objective {
-                        Objective::Points => points(lines, p.spin, &mut b2b, &mut combo) / 100.0,
-                        Objective::Attack => {
-                            let pc = lines > 0 && board.is_empty();
-                            2.0 * attack(lines, p.spin, &mut b2b, &mut combo, pc) as f32
-                        }
-                    };
-                    // Bank opener progress as it's made, counting only shapes the visible pieces
-                    // can still finish. Losing progress without a clear (wasting a needed piece,
-                    // breaking the shape) gives it back; the clear that fires its spin doesn't.
-                    let mut progress = node.progress;
-                    let mut gain = gain;
-                    if cfg.weights.setup != 0.0 {
-                        progress = setups::progress(&board, available(&seq, next, hold));
-                        let delta = progress - node.progress;
-                        if delta > 0.0 || lines == 0 {
-                            gain += cfg.weights.setup * delta;
-                        }
-                    }
-                    let reward = node.reward + gain;
-                    let mut value = reward + eval(&board, b2b, &cfg.weights);
-                    if cfg.noise > 0.0 {
-                        value += cfg.noise * jitter(&board, cfg.salt);
-                    }
-                    let first = if depth == 0 {
+                    let Some(mut child) = play(node, &p, hold, next, &seq, rules, cfg) else { continue };
+                    if depth == 0 {
                         first_moves.push(p);
-                        first_moves.len() - 1
-                    } else {
-                        node.first
-                    };
-                    children.push(Node { board, hold, next, b2b, combo, reward, value, progress, first });
+                        child.first = first_moves.len() - 1;
+                    }
+                    children.push(child);
                 }
             }
         }
@@ -208,7 +199,92 @@ pub fn suggest(root: &Root, rules: &Rules, cfg: &Config) -> Option<Placement> {
         best = Some(children[0].first);
         layer = children;
     }
+
+    // One piece past the visible queue: unknown, but it is one of the pieces left in the bag, so
+    // score each line by its average over those (playing that piece or the held one).
+    if cfg.speculate && root.bag != 0 && !first_moves.is_empty() {
+        let mut spec = layer.clone();
+        for node in spec.iter_mut().filter(|n| n.next >= seq.len()) {
+            let possible: Vec<Piece> = Piece::ALL.into_iter().filter(|&p| root.bag & 1 << p as u8 != 0).collect();
+            let mut total = 0.0;
+            for &piece in &possible {
+                let mut choices = vec![(piece, node.hold)];
+                if let Some(h) = node.hold.filter(|&h| h != piece) {
+                    choices.push((h, Some(piece)));
+                }
+                let mut best_here = DEATH;
+                for (play_piece, hold) in choices {
+                    for p in find_placements(&node.board, play_piece, rules) {
+                        if let Some(c) = play(node, &p, hold, node.next + 1, &seq, rules, cfg) {
+                            best_here = best_here.max(c.value);
+                        }
+                    }
+                }
+                total += best_here;
+            }
+            node.value = total / possible.len() as f32;
+        }
+        best = spec.iter().max_by(|a, b| a.value.total_cmp(&b.value)).map(|n| n.first);
+    }
     best.map(|i| first_moves.swap_remove(i))
+}
+
+/// Value given to a line of play that tops out on a speculated piece.
+const DEATH: f32 = -1000.0;
+
+/// The node after locking placement `p` (with `hold` / `next` as given by `options`), scored.
+/// None if it tops out.
+fn play(node: &Node, p: &Placement, hold: Option<Piece>, next: usize, seq: &[Piece], rules: &Rules, cfg: &Config) -> Option<Node> {
+    let mut board = node.board;
+    let lines = board.lock(p.piece, p.x, p.y, p.rot);
+    if tops_out(&board, rules) {
+        return None;
+    }
+    let (mut b2b, mut combo) = (node.b2b, node.combo);
+    let mut pending = node.pending;
+    let mut gain = match cfg.objective {
+        Objective::Points => points(lines, p.spin, &mut b2b, &mut combo) / 100.0,
+        Objective::Attack => {
+            let pc = lines > 0 && board.is_empty();
+            let sent = attack(lines, p.spin, &mut b2b, &mut combo, pc);
+            pending -= sent.min(pending); // attack cancels incoming garbage first
+            2.0 * sent as f32
+        }
+    };
+    // Like the game: a lock that clears nothing lets incoming garbage rise. The real hole column
+    // is random; assume it lands under the lowest column.
+    if lines == 0 && pending > 0 {
+        let rise = pending.min(GARBAGE_PER_LOCK);
+        pending -= rise;
+        if !board.push_garbage(rise as usize, lowest_column(&board)) || tops_out(&board, rules) {
+            return None;
+        }
+    }
+    // Bank setup progress as it's made, counting only stages the visible pieces can still
+    // finish. Losing progress gives it back, unless this placement is the T-spin that fires the
+    // setup. (Filling the slot with another piece that happens to clear a line must not keep it.)
+    let mut progress = node.progress;
+    if cfg.weights.setup != 0.0 {
+        progress = setups::progress(&board, available(seq, next, hold));
+        let delta = progress - node.progress;
+        let fired = lines > 0 && p.spin == Spin::Full;
+        if delta > 0.0 || !fired {
+            gain += cfg.weights.setup * delta;
+        }
+    }
+    let reward = node.reward + gain;
+    let leaf = match net::value_net().filter(|_| cfg.use_net) {
+        Some(n) => {
+            let slot = tslot(&board).map(|s| s.3);
+            n.eval(&net::features(&board, b2b, combo, pending, slot == Some(2), slot == Some(3)))
+        }
+        None => eval(&board, b2b, &cfg.weights) + cfg.weights.incoming * pending as f32,
+    };
+    let mut value = reward + leaf;
+    if cfg.noise > 0.0 {
+        value += cfg.noise * jitter(&board, cfg.salt);
+    }
+    Some(Node { board, hold, next, b2b, combo, pending, reward, value, progress, first: node.first })
 }
 
 /// (piece to play, hold afterwards, next index) for each choice at this node.
@@ -238,6 +314,10 @@ fn available(seq: &[Piece], next: usize, hold: Option<Piece>) -> u8 {
 fn jitter(board: &Board, salt: u64) -> f32 {
     let h = board.rows.iter().fold(0xCBF2_9CE4_8422_2325u64 ^ salt, |h, &r| (h ^ r as u64).wrapping_mul(0x100_0000_01B3));
     (h >> 40) as f32 / (1u64 << 24) as f32
+}
+
+fn lowest_column(b: &Board) -> i8 {
+    (0..WIDTH).max_by_key(|&x| (0..HEIGHT).find(|&y| b.occupied(x, y)).unwrap_or(HEIGHT)).unwrap()
 }
 
 /// Anything in the spawn area means the next piece can't appear.
@@ -287,12 +367,17 @@ fn eval(board: &Board, b2b: bool, w: &Weights) -> f32 {
         + w.b2b * b2b as u8 as f32
 }
 
+/// Lines the best ready T-spin slot would clear (2 = TSD, 3 = TST), for net features.
+pub fn tslot_kind(b: &Board) -> Option<u32> {
+    tslot(b).map(|s| s.3)
+}
+
 /// The best ready T-spin slot as (x, y, rot, lines): a TST if any, else a TSD.
 /// Corners are implied by the rows being full; full reachability isn't checked.
 /// TSD: nose-down T at (x, y) under an overhang completes rows y and y+1.
 /// TST: upright T at (x, y), nose in a side notch, completes rows y-1..=y+1; needs a roof over
 /// its column, since the T only gets in through the SRS triple-twist kick.
-fn tslot(b: &Board) -> Option<(i8, i8, u8, u32)> {
+pub(crate) fn tslot(b: &Board) -> Option<(i8, i8, u8, u32)> {
     const FULL: u16 = 0x3FF;
     // Only `bits` are missing from row y.
     let only = |y: i8, bits: u16| b.rows[y as usize] | bits == FULL && b.rows[y as usize] & bits == 0;
@@ -343,6 +428,8 @@ pub fn play_game(cfg: &Config, seed: u64) -> GameStats {
             queue: &queue,
             b2b: game.b2b,
             combo: game.combo,
+            pending: 0,
+            bag: game.bag_mask(),
         };
         let t = Instant::now();
         let Some(p) = suggest(&root, &game.rules, cfg) else { break };
@@ -375,7 +462,7 @@ mod tests {
         board.rows[38] = 0x3FF & !0b111;
         board.rows[37] = 1;
         assert_eq!(tslot(&board).map(|s| s.3), Some(2));
-        let root = Root { board, current: Piece::T, hold: None, can_hold: true, queue: &[Piece::I, Piece::O], b2b: false, combo: -1 };
+        let root = Root { board, current: Piece::T, hold: None, can_hold: true, queue: &[Piece::I, Piece::O], b2b: false, combo: -1, pending: 0, bag: 0 };
         let p = suggest(&root, &Rules::monochrome_rush(1), &Config::default()).unwrap();
         assert_eq!((p.piece, p.spin), (Piece::T, Spin::Full));
     }
@@ -392,7 +479,7 @@ mod tests {
                 let mut game = Game::new(Rules::versus(), seed);
                 for _ in 0..200 {
                     let queue: Vec<_> = game.queue.iter().copied().collect();
-                    let root = Root { board: game.board, current: game.current, hold: game.hold, can_hold: true, queue: &queue, b2b: game.b2b, combo: game.combo };
+                    let root = Root { board: game.board, current: game.current, hold: game.hold, can_hold: true, queue: &queue, b2b: game.b2b, combo: game.combo, pending: 0, bag: game.bag_mask() };
                     game.play(&suggest(&root, &game.rules, &cfg).unwrap());
                     assert!(!game.over, "level {level} topped out");
                     sum += 40 - game.board.rows.iter().position(|&r| r != 0).unwrap_or(40);
@@ -414,7 +501,7 @@ mod tests {
         board.rows[35] = 0b1100;
         assert_eq!(tslot(&board).map(|s| s.3), Some(3));
         for level in [1, 11] {
-            let root = Root { board, current: Piece::T, hold: None, can_hold: true, queue: &[Piece::I, Piece::O], b2b: false, combo: -1 };
+            let root = Root { board, current: Piece::T, hold: None, can_hold: true, queue: &[Piece::I, Piece::O], b2b: false, combo: -1, pending: 0, bag: 0 };
             let p = suggest(&root, &Rules::monochrome_rush(level), &Config::default()).unwrap();
             assert_eq!((p.piece, p.spin), (Piece::T, Spin::Full), "level {level}");
             assert_eq!(board.clone().lock(p.piece, p.x, p.y, p.rot), 3, "level {level}");

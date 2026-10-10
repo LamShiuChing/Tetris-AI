@@ -27,7 +27,7 @@ fn run(cfg: &Config, seed: u64) -> Stats {
     let mut was_complete = false;
     for _ in 0..PIECES {
         let queue: Vec<_> = game.queue.iter().copied().collect();
-        let root = Root { board: game.board, current: game.current, hold: game.hold, can_hold: true, queue: &queue, b2b: game.b2b, combo: game.combo };
+        let root = Root { board: game.board, current: game.current, hold: game.hold, can_hold: true, queue: &queue, b2b: game.b2b, combo: game.combo, pending: 0, bag: game.bag_mask() };
         let t = std::time::Instant::now();
         let Some(p) = suggest(&root, &game.rules, cfg) else { break };
         s.think_ms += t.elapsed().as_secs_f64() * 1000.0;

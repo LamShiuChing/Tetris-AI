@@ -50,17 +50,18 @@ pub extern "C" fn events_ptr() -> *const i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn suggest(current: u32, hold: u32, can_hold: u32, queue_len: u32, b2b: u32, combo: i32, level: u32) -> u32 {
     let queue = read_queue(queue_len);
-    let root = read_root(current, hold, can_hold, &queue, b2b, combo);
+    let root = read_root(current, hold, can_hold, &queue, b2b, combo, 0, 0);
     write_out(bot::suggest(&root, &Rules::monochrome_rush(level), &Config::default()))
 }
 
 /// Stackfall bot at `difficulty` 1..=10; `salt` varies its mistakes so two bots don't mirror.
 /// `flags`: bit 0 = plan for 20G (every action falls to the floor), bit 1 = solo score objective
-/// instead of versus attack. Same inputs and output as `suggest`.
+/// instead of versus attack. `pending` = incoming garbage lines; `bag` = piece types left in the
+/// current bag after the queue (snapshot index 62). Same output as `suggest`.
 #[unsafe(no_mangle)]
-pub extern "C" fn plan(current: u32, hold: u32, can_hold: u32, queue_len: u32, b2b: u32, combo: i32, difficulty: u32, salt: u32, flags: u32) -> u32 {
+pub extern "C" fn plan(current: u32, hold: u32, can_hold: u32, queue_len: u32, b2b: u32, combo: i32, difficulty: u32, salt: u32, flags: u32, pending: u32, bag: u32) -> u32 {
     let queue = read_queue(queue_len);
-    let root = read_root(current, hold, can_hold, &queue, b2b, combo);
+    let root = read_root(current, hold, can_hold, &queue, b2b, combo, pending, bag as u8);
     let objective = if flags & 2 != 0 { Objective::Points } else { Objective::Attack };
     let cfg = Config { salt: salt as u64, ..Config::difficulty(difficulty, objective) };
     let gravity = if flags & 1 != 0 { Gravity::TwentyG } else { Gravity::Zero };
@@ -72,7 +73,7 @@ fn read_queue(len: u32) -> Vec<Piece> {
     queue[..len as usize].iter().map(|&i| Piece::ALL[i as usize]).collect()
 }
 
-fn read_root(current: u32, hold: u32, can_hold: u32, queue: &[Piece], b2b: u32, combo: i32) -> Root<'_> {
+fn read_root(current: u32, hold: u32, can_hold: u32, queue: &[Piece], b2b: u32, combo: i32, pending: u32, bag: u8) -> Root<'_> {
     Root {
         board: Board { rows: unsafe { *(&raw const BOARD) } },
         current: Piece::ALL[current as usize],
@@ -81,6 +82,8 @@ fn read_root(current: u32, hold: u32, can_hold: u32, queue: &[Piece], b2b: u32, 
         queue,
         b2b: b2b != 0,
         combo,
+        pending,
+        bag,
     }
 }
 
@@ -161,7 +164,7 @@ pub extern "C" fn live_set_level(slot: u32, level: u32) {
 
 /// i32 layout: [0..40) rows, 40 piece (-1 none), 41 x, 42 y, 43 rot, 44 ghost y, 45 hold (-1 none),
 /// 46 can hold, 47..52 queue, 52 b2b, 53 combo, 54 pending garbage, 55 over, 56 lock progress (0..1000),
-/// 57 lines, 58 pieces, 59 lines sent, 60 score, 61 level.
+/// 57 lines, 58 pieces, 59 lines sent, 60 score, 61 level, 62 bag (pieces left after the queue).
 #[unsafe(no_mangle)]
 pub extern "C" fn live_snapshot(slot: u32) -> *const i32 {
     let g = game(slot);
@@ -188,6 +191,7 @@ pub extern "C" fn live_snapshot(slot: u32) -> *const i32 {
     ]);
     s[60] = g.score as i32;
     s[61] = g.level as i32;
+    s[62] = g.bag_mask() as i32;
     s.as_ptr()
 }
 
@@ -229,7 +233,7 @@ pub extern "C" fn live_events(slot: u32) -> u32 {
             Event::SoftDrop => [3, 0, 0, 0, 0, 0, 0, 0],
             Event::Hold => [4, 0, 0, 0, 0, 0, 0, 0],
             Event::HardDrop { rows } => [5, rows as i32, 0, 0, 0, 0, 0, 0],
-            Event::Lock { at, lines, spin, combo, b2b, perfect_clear, sent, cleared } => [
+            Event::Lock { at, lines, spin, combo, b2b, perfect_clear, sent, cleared, .. } => [
                 6,
                 lines as i32,
                 spin as i32,

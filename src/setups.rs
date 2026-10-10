@@ -35,7 +35,6 @@ struct Index {
     shapes: Vec<Shape>,
     /// For each of the 1024 possible board bottom rows, the shapes that allow it.
     by_bottom: Vec<Vec<usize>>,
-    max_height: usize,
 }
 
 fn mask(row: &str, mirror: bool, keep: impl Fn(u8) -> bool) -> u16 {
@@ -70,8 +69,7 @@ fn index() -> &'static Index {
                     .collect()
             })
             .collect();
-        let max_height = shapes.iter().map(|s| s.fill.len()).max().unwrap_or(0);
-        Index { shapes, by_bottom, max_height }
+        Index { shapes, by_bottom }
     })
 }
 
@@ -81,25 +79,34 @@ pub fn piece_mask(pieces: impl IntoIterator<Item = Piece>) -> u8 {
 }
 
 /// How far the board is into any known stage, 0..=1. A stage counts only if the board has its
-/// context, no cell outside it (or above it), and every piece it still needs is in `available`
+/// context, nothing else inside its rows, and every piece it still needs is in `available`
 /// (a `piece_mask`), so the bot never chases a stage it can't finish with the pieces it sees.
+/// Above the stage, the bot may keep stacking (it has to while it waits for the T), but only in
+/// columns the stage's top row covers: the open columns are the T's way in.
 pub fn progress(b: &Board, available: u8) -> f32 {
     let idx = index();
     let height = HEIGHT as usize - b.rows.iter().position(|&r| r != 0).unwrap_or(HEIGHT as usize);
-    if height == 0 || height > idx.max_height {
+    if height == 0 {
         return 0.0;
     }
+    // above[k] = columns with any cell in rows 0..k, so "anything above row k" is one lookup.
+    let mut above = [0u16; HEIGHT as usize + 1];
+    for k in 0..HEIGHT as usize {
+        above[k + 1] = above[k] | b.rows[k];
+    }
     let bottom = b.rows[HEIGHT as usize - 1];
-    idx.by_bottom[bottom as usize].iter().filter_map(|&i| stage_progress(&idx.shapes[i], b, height, available)).fold(0.0, f32::max)
+    idx.by_bottom[bottom as usize].iter().filter_map(|&i| stage_progress(&idx.shapes[i], b, &above, available)).fold(0.0, f32::max)
 }
 
-fn stage_progress(s: &Shape, b: &Board, height: usize, available: u8) -> Option<f32> {
-    if height > s.fill.len() {
+fn stage_progress(s: &Shape, b: &Board, above: &[u16], available: u8) -> Option<f32> {
+    let top = HEIGHT as usize - s.fill.len();
+    if above[top] & !(s.ctx[0] | s.fill[0]) & 0x3FF != 0 {
         return None;
     }
-    let rows = &b.rows[HEIGHT as usize - s.fill.len()..];
+    let rows = &b.rows[top..];
     let mut have = 0;
-    for ((&r, &c), &f) in rows.iter().zip(&s.ctx).zip(&s.fill) {
+    // Bottom-up: the context (most of what tells stages apart) sits low, so mismatches show early.
+    for ((&r, &c), &f) in rows.iter().zip(&s.ctx).zip(&s.fill).rev() {
         if r & c != c || r & !(c | f) != 0 {
             return None;
         }
@@ -131,10 +138,10 @@ mod tests {
         // TKI 3 complete, and its mirror: nothing more needed.
         assert_eq!(progress(&board(&["L..ZZ.S...", "L...ZZSSOO", "LL.IIIISOO"]), 0), 1.0);
         assert_eq!(progress(&board(&["...S.ZZ..L", "OOSSZZ...L", "OOSIIII.LL"]), 0), 1.0);
-        // A cell higher than every shape reaches.
-        let mut tall = vec![".........."; index().max_height + 1];
-        tall[0] = "....X.....";
-        assert_eq!(progress(&board(&tall), all), 0.0);
+        // Waiting for the T: stacking above covered columns keeps TKI complete...
+        assert_eq!(progress(&board(&["...OO.....", "...OO.....", "L..ZZ.S...", "L...ZZSSOO", "LL.IIIISOO"]), 0), 1.0);
+        // ...but covering the columns over the T-slot doesn't.
+        assert_eq!(progress(&board(&[".OO.......", ".OO.......", "L..ZZ.S...", "L...ZZSSOO", "LL.IIIISOO"]), 0), 0.0);
     }
 
     #[test]

@@ -19,7 +19,7 @@ export interface Exports {
   board_ptr(): number;
   queue_ptr(): number;
   out_ptr(): number;
-  plan(current: number, hold: number, canHold: number, queueLen: number, b2b: number, combo: number, difficulty: number, salt: number, flags: number): number;
+  plan(current: number, hold: number, canHold: number, queueLen: number, b2b: number, combo: number, difficulty: number, salt: number, flags: number, pending: number, bag: number): number;
 }
 
 export async function loadEngine(): Promise<Exports> {
@@ -54,6 +54,8 @@ export interface Snapshot {
   sent: number;
   score: number;
   level: number;
+  /** Piece types left in the current bag after the queue (bit = piece index), for the bot. */
+  bag: number;
 }
 
 export type GameEvent =
@@ -114,7 +116,7 @@ export class Player {
   }
 
   snapshot(): Snapshot {
-    const s = new Int32Array(this.w.memory.buffer, this.w.live_snapshot(this.slot), 62);
+    const s = new Int32Array(this.w.memory.buffer, this.w.live_snapshot(this.slot), 63);
     const colors = new Uint8Array(this.w.memory.buffer, this.w.live_colors(this.slot), 400).slice();
     return {
       rows: s.slice(0, 40),
@@ -137,6 +139,7 @@ export class Player {
       sent: s[59],
       score: s[60],
       level: s[61],
+      bag: s[62],
     };
   }
 

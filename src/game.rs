@@ -146,6 +146,11 @@ impl Game {
         info
     }
 
+    /// What can come after the visible queue, for `Root::bag`.
+    pub fn bag_mask(&self) -> u8 {
+        self.bag.remaining_mask()
+    }
+
     fn next_piece(&mut self) -> Piece {
         let p = self.queue.pop_front().unwrap();
         self.queue.push_back(self.bag.next());
@@ -162,6 +167,11 @@ pub(crate) struct Bag {
 impl Bag {
     pub(crate) fn new(seed: u64) -> Self {
         Bag { rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1, pieces: vec![] }
+    }
+
+    /// Piece types the current bag still holds (all seven once it's used up).
+    pub(crate) fn remaining_mask(&self) -> u8 {
+        if self.pieces.is_empty() { 0x7F } else { self.pieces.iter().fold(0, |m, &p| m | 1 << p as u8) }
     }
 
     pub(crate) fn next(&mut self) -> Piece {
@@ -212,7 +222,7 @@ mod tests {
             let mut game = Game::new(Rules::monochrome_rush(level), 7);
             for _ in 0..300 {
                 let queue: Vec<_> = game.queue.iter().copied().collect();
-                let root = Root { board: game.board, current: game.current, hold: game.hold, can_hold: true, queue: &queue, b2b: game.b2b, combo: game.combo };
+                let root = Root { board: game.board, current: game.current, hold: game.hold, can_hold: true, queue: &queue, b2b: game.b2b, combo: game.combo, pending: 0, bag: game.bag_mask() };
                 game.play(&suggest(&root, &game.rules, &cfg).unwrap());
                 assert!(!game.over, "level {level}: topped out after {} lines", game.lines);
             }

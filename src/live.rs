@@ -11,7 +11,7 @@ use crate::piece::Piece;
 /// Moves/rotations on the ground that refresh lock delay, per piece (reset by reaching a new lowest row).
 const MAX_RESETS: u32 = 15;
 /// Garbage rows that can enter on a single lock.
-const GARBAGE_PER_LOCK: u32 = 8;
+pub const GARBAGE_PER_LOCK: u32 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Active {
@@ -29,7 +29,8 @@ pub enum Event {
     Hold,
     HardDrop { rows: u32 },
     /// `cleared` has bit y set for each row that was full before clearing.
-    Lock { at: Active, lines: u32, spin: Spin, combo: i32, b2b: bool, perfect_clear: bool, sent: u32, cleared: u64 },
+    /// `attack` is what the clear was worth; `sent` is what's left after cancelling incoming garbage.
+    Lock { at: Active, lines: u32, spin: Spin, combo: i32, b2b: bool, perfect_clear: bool, attack: u32, sent: u32, cleared: u64 },
     GarbageIn { lines: u32 },
     TopOut,
 }
@@ -197,6 +198,11 @@ impl Live {
         }
     }
 
+    /// What can come after the visible queue, for the bot's `Root::bag`.
+    pub fn bag_mask(&self) -> u8 {
+        self.bag.remaining_mask()
+    }
+
     pub fn pending_lines(&self) -> u32 {
         self.pending.iter().map(|g| g.0).sum()
     }
@@ -305,7 +311,8 @@ impl Live {
         let b2b_before = self.b2b;
         let (mut b2b, mut combo) = (self.b2b, self.combo);
         self.score += (points(lines, spin, &mut b2b, &mut combo) * self.level as f32) as f64;
-        let mut out = attack(lines, spin, &mut self.b2b, &mut self.combo, perfect_clear);
+        let raw = attack(lines, spin, &mut self.b2b, &mut self.combo, perfect_clear);
+        let mut out = raw;
 
         // Outgoing attack cancels incoming garbage first.
         while out > 0 {
@@ -321,7 +328,7 @@ impl Live {
         self.pieces += 1;
         self.sent += out;
         let b2b = b2b_before && self.b2b && lines > 0;
-        self.events.push(Event::Lock { at: a, lines, spin, combo: self.combo, b2b, perfect_clear, sent: out, cleared });
+        self.events.push(Event::Lock { at: a, lines, spin, combo: self.combo, b2b, perfect_clear, attack: raw, sent: out, cleared });
 
         if lines == 0 {
             let mut room = GARBAGE_PER_LOCK;
