@@ -143,6 +143,10 @@ class Audio {
     this.noise(0.2, { vol: 0.2, freq: 300, pan });
   }
 
+  levelUp() {
+    [0, 4, 7, 12].forEach((n, i) => this.tone(midi(76 + n), 0.15, { type: 'square', vol: 0.08, delay: i * 0.05 }));
+  }
+
   danger() {
     this.tone(70, 0.12, { type: 'sine', vol: 0.25 });
     this.tone(70, 0.1, { type: 'sine', vol: 0.18, delay: 0.16 });

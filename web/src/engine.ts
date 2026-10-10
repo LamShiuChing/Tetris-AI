@@ -9,6 +9,8 @@ export interface Exports {
   live_tick(slot: number, dtMs: number): void;
   live_garbage(slot: number, lines: number): void;
   live_set_gravity(slot: number, gravityMs: number): void;
+  live_set_lock_delay(slot: number, ms: number): void;
+  live_set_level(slot: number, level: number): void;
   live_snapshot(slot: number): number;
   live_colors(slot: number): number;
   live_events(slot: number): number;
@@ -17,7 +19,7 @@ export interface Exports {
   board_ptr(): number;
   queue_ptr(): number;
   out_ptr(): number;
-  plan(current: number, hold: number, canHold: number, queueLen: number, b2b: number, combo: number, difficulty: number, salt: number): number;
+  plan(current: number, hold: number, canHold: number, queueLen: number, b2b: number, combo: number, difficulty: number, salt: number, flags: number): number;
 }
 
 export async function loadEngine(): Promise<Exports> {
@@ -50,6 +52,8 @@ export interface Snapshot {
   lines: number;
   pieces: number;
   sent: number;
+  score: number;
+  level: number;
 }
 
 export type GameEvent =
@@ -102,12 +106,15 @@ export class Player {
     this.w.live_garbage(this.slot, lines);
   }
 
-  setGravity(ms: number) {
-    this.w.live_set_gravity(this.slot, ms);
+  /** Mode physics: ms per row (0 = 20G), lock delay, and the level that multiplies score. */
+  setPhysics(gravityMs: number, lockDelayMs: number, level: number) {
+    this.w.live_set_gravity(this.slot, gravityMs);
+    this.w.live_set_lock_delay(this.slot, lockDelayMs);
+    this.w.live_set_level(this.slot, level);
   }
 
   snapshot(): Snapshot {
-    const s = new Int32Array(this.w.memory.buffer, this.w.live_snapshot(this.slot), 60);
+    const s = new Int32Array(this.w.memory.buffer, this.w.live_snapshot(this.slot), 62);
     const colors = new Uint8Array(this.w.memory.buffer, this.w.live_colors(this.slot), 400).slice();
     return {
       rows: s.slice(0, 40),
@@ -128,6 +135,8 @@ export class Player {
       lines: s[57],
       pieces: s[58],
       sent: s[59],
+      score: s[60],
+      level: s[61],
     };
   }
 

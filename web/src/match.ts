@@ -1,42 +1,70 @@
-// A 1v1 match: two engine players (human or bot), garbage routed between them as flying orbs,
-// gravity that speeds up over time, countdown and K.O.
+// A match: versus (two players, garbage as flying orbs, gravity rising with time) or a solo
+// score mode (Marathon / Master) for one player. Each side is a human or a bot.
 import { Container, Text } from 'pixi.js';
 import { audio } from './audio';
-import { Bot, LEVELS, type Planner } from './bot';
+import { Bot, LEVELS, type Physics, type Planner } from './bot';
 import { Player, pieceCells, type Exports, type GameEvent, type Snapshot } from './engine';
 import { FONT, type Fx } from './fx';
 import type { Controls } from './input';
 import { BoardView, CELL, COLORS, GARBAGE, H, W, type Textures } from './view';
 
 export type Side = { kind: 'human' } | { kind: 'bot'; level: number };
+export type Mode = 'versus' | 'marathon' | 'master';
 
 export interface MatchConfig {
-  sides: [Side, Side];
+  mode: Mode;
+  /** Two sides for versus, one for solo modes. */
+  sides: Side[];
   /** Draw each bot's intended placement (watch mode). */
   showPlan: boolean;
   /** Time scale, for watching bots faster or slower. */
   speed: number;
 }
 
-const BOARD_X = [200, 800];
+interface ModeRules {
+  title: string;
+  /** Lines to finish; 0 = play until someone tops out. */
+  goal: number;
+  gravityMs(level: number, ms: number): number;
+  lockDelayMs(level: number): number;
+}
+
+export const MODES: Record<Mode, ModeRules> = {
+  // Gravity ramps from 1 s/row toward ~25 ms/row over a few minutes, forcing a winner.
+  versus: { title: 'VERSUS', goal: 0, gravityMs: (_, ms) => Math.max(25, 1000 * 0.9 ** (ms / 10000)), lockDelayMs: () => 500 },
+  // Classic climb: every 10 lines is a level, each level falls ~20% faster.
+  marathon: { title: 'MARATHON', goal: 150, gravityMs: (lv) => Math.max(16, 1000 * 0.8 ** (lv - 1)), lockDelayMs: () => 500 },
+  // 20G from the first piece; lock delay tightens from 500 ms to 200 ms by level 30.
+  master: { title: 'MASTER', goal: 300, gravityMs: () => 0, lockDelayMs: (lv) => Math.max(200, 500 - (lv - 1) * 10.5) },
+};
+
 const BOARD_Y = 96;
-const LOCK_DELAY = 500;
 const COUNTDOWN = 3000;
 const SPIN_NAMES = ['', 'SINGLE', 'DOUBLE', 'TRIPLE'];
 const CLEAR_NAMES = ['', 'SINGLE', 'DOUBLE', 'TRIPLE', 'QUAD'];
 
+export interface MatchResult {
+  winner: number;
+  title: string;
+  detail: string;
+}
+
 export class Match extends Container {
-  onEnd: (winner: number) => void = () => {};
+  onEnd: (r: MatchResult) => void = () => {};
+  private rules: ModeRules;
   private players: Player[];
   private views: BoardView[];
   private bots: (Bot | null)[];
   private snaps: Snapshot[];
+  private physics: Physics[];
   private top = new Container();
   private banner: Text;
   private clock: Text;
   private state: 'countdown' | 'playing' | 'over' = 'countdown';
   private t = 0;
   private heartbeat = 0;
+  /** Per board, the callouts for the latest clear; a new clear hides them so they never pile up. */
+  private callouts: Text[][] = [[], []];
 
   constructor(
     private engine: Exports,
@@ -47,34 +75,39 @@ export class Match extends Container {
     private cfg: MatchConfig,
   ) {
     super();
+    this.rules = MODES[cfg.mode];
+    const solo = cfg.sides.length === 1;
     const seed = (Math.random() * 2 ** 31) | 0;
-    this.players = [0, 1].map((slot) => {
+    this.players = cfg.sides.map((_, slot) => {
       const p = new Player(engine, slot);
-      p.start(seed, 1000, LOCK_DELAY); // same seed: both players get the same pieces
+      p.start(seed, this.rules.gravityMs(1, 0), this.rules.lockDelayMs(1)); // same seed: same pieces for everyone
       return p;
     });
+    const xs = solo ? [500] : [200, 800];
     this.views = cfg.sides.map((side, i) => {
       const name = side.kind === 'human' ? 'YOU' : `${LEVELS[side.level - 1].name.toUpperCase()} · LV ${side.level}`;
       const v = new BoardView(engine, tex, name, i === 0 ? 0x5fd3ff : 0xff5fa2);
-      v.position.set(BOARD_X[i], BOARD_Y);
+      v.position.set(xs[i], BOARD_Y);
       this.addChild(v);
       return v;
     });
     this.bots = cfg.sides.map((side, i) => (side.kind === 'bot' ? new Bot(this.players[i], planner, side.level) : null));
     this.snaps = this.players.map((p) => p.snapshot());
+    this.physics = this.players.map(() => ({ gravityMs: this.rules.gravityMs(1, 0), lockDelayMs: this.rules.lockDelayMs(1), solo }));
 
-    const vs = new Text({ text: 'VS', style: { fontFamily: FONT, fontWeight: '800', fontSize: 44, fill: 0xffffff, stroke: { color: 0x1a1036, width: 8 } } });
-    vs.anchor.set(0.5);
-    vs.position.set(640, BOARD_Y + H / 2);
-    this.clock = new Text({ text: '0:00', style: { fontFamily: FONT, fontWeight: '800', fontSize: 26, fill: 0xcfc6ff, stroke: { color: 0x1a1036, width: 6 } } });
+    const style = { fontFamily: FONT, fontWeight: '800' as const, fill: 0xffffff, stroke: { color: 0x1a1036, width: 8 } };
+    const heading = new Text({ text: solo ? this.rules.title : 'VS', style: { ...style, fontSize: solo ? 30 : 44, fill: solo ? 0xffd93d : 0xffffff } });
+    heading.anchor.set(0.5);
+    heading.position.set(solo ? 640 : 640, solo ? 40 : BOARD_Y + H / 2);
+    this.clock = new Text({ text: '0:00', style: { ...style, fontSize: 26, fill: 0xcfc6ff, stroke: { color: 0x1a1036, width: 6 } } });
     this.clock.anchor.set(0.5);
-    this.clock.position.set(640, 40);
-    this.banner = new Text({ text: '', style: { fontFamily: FONT, fontWeight: '800', fontSize: 120, fill: 0xffffff, stroke: { color: 0x1a1036, width: 16 }, dropShadow: { color: 0x000000, alpha: 0.5, distance: 8, blur: 4, angle: Math.PI / 2 } } });
+    this.clock.position.set(solo ? 1000 : 640, solo ? 120 : 40);
+    this.banner = new Text({ text: '', style: { ...style, fontSize: 120, stroke: { color: 0x1a1036, width: 16 }, dropShadow: { color: 0x000000, alpha: 0.5, distance: 8, blur: 4, angle: Math.PI / 2 } } });
     this.banner.anchor.set(0.5);
     this.banner.position.set(640, 360);
-    this.addChild(vs, this.clock, this.top, this.banner);
+    this.addChild(heading, this.clock, this.top, this.banner);
     controls.reset();
-    this.views.forEach((v, i) => v.render(this.snaps[i], null, 0));
+    this.views.forEach((v, i) => v.render(this.snaps[i], null, this.statsText(i)));
   }
 
   update(realDtMs: number) {
@@ -104,25 +137,30 @@ export class Match extends Container {
     }
     if (this.state === 'over') return;
 
-    // Gravity ramps from 1 s/row toward ~25 ms/row over a few minutes, forcing the match to end.
-    const gravity = Math.max(25, 1000 * 0.9 ** (this.t / 10000));
     const seconds = Math.floor(this.t / 1000);
     this.clock.text = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < this.players.length; i++) {
       const p = this.players[i];
-      p.setGravity(gravity);
+      const level = this.level(i);
+      const phys = this.physics[i];
+      phys.gravityMs = this.rules.gravityMs(level, this.t);
+      phys.lockDelayMs = this.rules.lockDelayMs(level);
+      p.setPhysics(phys.gravityMs, phys.lockDelayMs, level);
       const bot = this.bots[i];
-      if (bot) bot.update(dt, this.snaps[i]);
+      if (bot) bot.update(dt, this.snaps[i], phys);
       else this.controls.update(realDtMs, p, (k, ok) => ok && this.inputSound(k, i));
       p.tick(dt);
     }
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < this.players.length; i++) {
       const before = this.snaps[i];
       this.snaps[i] = this.players[i].snapshot();
       for (const e of this.players[i].events()) this.onEvent(i, e, before);
-      const pps = this.snaps[i].pieces / Math.max(this.t / 1000, 1);
-      this.views[i].render(this.snaps[i], this.cfg.showPlan ? (this.bots[i]?.target ?? null) : null, pps);
+      if (this.level(i) > before.level && this.rules.goal) {
+        this.fx.popup(this.views[i].fx, `LEVEL ${this.level(i)}`, W / 2, H * 0.2, { size: 34, color: 0x7dffb2 });
+        audio.levelUp();
+      }
+      this.views[i].render(this.snaps[i], this.cfg.showPlan ? (this.bots[i]?.target ?? null) : null, this.statsText(i));
     }
 
     const humanIdx = this.cfg.sides.findIndex((s) => s.kind === 'human');
@@ -134,12 +172,31 @@ export class Match extends Container {
       }
     }
 
-    const dead = this.snaps.map((s) => s.over);
-    if (dead.some(Boolean)) this.finish(dead[0] && dead[1] ? -1 : dead[0] ? 1 : 0);
+    if (this.cfg.sides.length === 1) {
+      const s = this.snaps[0];
+      if (s.over) this.finish(-1);
+      else if (s.lines >= this.rules.goal) this.finish(0);
+    } else {
+      const dead = this.snaps.map((s) => s.over);
+      if (dead.some(Boolean)) this.finish(dead[0] && dead[1] ? -1 : dead[0] ? 1 : 0);
+    }
+  }
+
+  private level(i: number) {
+    return this.rules.goal ? 1 + Math.floor(this.snaps[i].lines / 10) : 1;
+  }
+
+  private statsText(i: number) {
+    const s = this.snaps[i];
+    if (!this.rules.goal) {
+      const pps = s.pieces / Math.max(this.t / 1000, 1);
+      return `SENT ${s.sent}  ·  LINES ${s.lines}  ·  ${pps.toFixed(2)} PPS`;
+    }
+    return `LV ${this.level(i)}  ·  LINES ${Math.min(s.lines, this.rules.goal)}/${this.rules.goal}  ·  ${s.score.toLocaleString()}`;
   }
 
   private pan(i: number) {
-    return i === 0 ? -0.5 : 0.5;
+    return this.players.length === 1 ? 0 : i === 0 ? -0.5 : 0.5;
   }
 
   private inputSound(k: string, i: number) {
@@ -212,9 +269,14 @@ export class Match extends Container {
     const center = cells.reduce((a, c) => ({ x: a.x + c.x / 4, y: a.y + c.y / 4 }), { x: 0, y: 0 });
     const big = e.lines >= 4 || e.spin === 2 || e.pc;
     const name = e.spin === 2 ? `T-SPIN ${SPIN_NAMES[e.lines]}` : e.spin === 1 ? `MINI T-SPIN ${SPIN_NAMES[e.lines]}` : CLEAR_NAMES[e.lines];
-    if (e.lines >= 2 || e.spin) this.fx.popup(v.fx, name, W / 2, H * 0.35, { size: big ? 40 : 30, color: e.spin ? 0xff8ce0 : e.lines >= 4 ? 0xffe066 : 0xffffff });
-    if (e.b2b) this.fx.popup(v.fx, 'BACK-TO-BACK', W / 2, H * 0.35 - 44, { size: 20, color: 0x9ff7ff, delay: 80 });
-    if (e.combo >= 1) this.fx.popup(v.fx, `${e.combo} REN`, W / 2, H * 0.35 + 46, { size: 24 + Math.min(e.combo, 10) * 2, color: 0xffb347, delay: 60 });
+    const callouts: Text[] = [];
+    if (e.lines >= 2 || e.spin) callouts.push(this.fx.popup(v.fx, name, W / 2, H * 0.35, { size: big ? 40 : 30, color: e.spin ? 0xff8ce0 : e.lines >= 4 ? 0xffe066 : 0xffffff }));
+    if (e.b2b) callouts.push(this.fx.popup(v.fx, 'BACK-TO-BACK', W / 2, H * 0.35 - 44, { size: 20, color: 0x9ff7ff, delay: 80 }));
+    if (e.combo >= 1) callouts.push(this.fx.popup(v.fx, `${e.combo} REN`, W / 2, H * 0.35 + 46, { size: 24 + Math.min(e.combo, 10) * 2, color: 0xffb347, delay: 60 }));
+    if (callouts.length) {
+      this.callouts[i].forEach((t) => (t.visible = false)); // their tweens still clean them up
+      this.callouts[i] = callouts;
+    }
     if (big) {
       this.fx.ring(v.fx, center.x, center.y, e.spin ? 0xff8ce0 : 0xffe066);
       this.fx.burst(v.fx, center.x, center.y, color, 30, 420);
@@ -225,7 +287,7 @@ export class Match extends Container {
       for (let k = 0; k < 6; k++) this.fx.burst(v.fx, Math.random() * W, Math.random() * H, COLORS[k], 20, 380);
     }
 
-    if (e.sent > 0) {
+    if (e.sent > 0 && this.players.length === 2) {
       const j = 1 - i;
       audio.send(e.sent, pan);
       const from = this.toLocal(v.inner.toGlobal(center));
@@ -240,24 +302,41 @@ export class Match extends Container {
     }
   }
 
+  /** `winner`: side index, or -1 for a draw / solo game over. Solo goal reached = winner 0. */
   private finish(winner: number) {
     this.state = 'over';
     audio.stopMusic();
+    const solo = this.players.length === 1;
     const humanIdx = this.cfg.sides.findIndex((s) => s.kind === 'human');
-    const text = winner < 0 ? 'DRAW' : humanIdx < 0 ? (winner === 0 ? 'LEFT WINS' : 'RIGHT WINS') : winner === humanIdx ? 'YOU WIN!' : 'K.O.';
-    this.banner.text = text;
+    const time = this.clock.text;
+    let title: string;
+    let detail = '';
+    if (solo) {
+      const s = this.snaps[0];
+      title = winner === 0 ? 'COMPLETE!' : 'GAME OVER';
+      detail = `${this.rules.title} · ${s.score.toLocaleString()} pts · ${Math.min(s.lines, this.rules.goal)} lines · ${time}`;
+    } else {
+      title = winner < 0 ? 'DRAW' : humanIdx < 0 ? (winner === 0 ? 'LEFT BOT WINS' : 'RIGHT BOT WINS') : winner === humanIdx ? 'YOU WIN!' : 'YOU LOSE';
+      detail = time;
+    }
+    this.banner.text = solo ? title : winner < 0 ? 'DRAW' : humanIdx >= 0 && winner !== humanIdx ? 'K.O.' : 'WIN!';
     this.banner.alpha = 1;
     this.banner.scale.set(0.2);
     this.fx.tween(500, (p) => this.banner.scale.set(0.2 + 0.8 * (1 + 2.7 * (p - 1) ** 3 + 1.7 * (p - 1) ** 2)));
-    if (humanIdx >= 0 && winner !== humanIdx) audio.lose();
-    else audio.win();
+    const happy = solo ? winner === 0 : humanIdx < 0 || winner === humanIdx;
+    if (happy) audio.win();
+    else audio.lose();
     if (winner >= 0) {
-      const loser = this.views[1 - winner];
-      loser.shake(18);
-      this.fx.tween(900, (p) => (loser.alpha = 1 - 0.6 * p));
       const w = this.views[winner];
       for (let k = 0; k < 5; k++) this.fx.burst(w.fx, Math.random() * W, Math.random() * H * 0.6, COLORS[k], 25, 400);
+      if (!solo) {
+        const loser = this.views[1 - winner];
+        loser.shake(18);
+        this.fx.tween(900, (p) => (loser.alpha = 1 - 0.6 * p));
+      }
+    } else {
+      this.views.forEach((v) => (v.shake(18), this.fx.tween(900, (p) => (v.alpha = 1 - 0.6 * p))));
     }
-    setTimeout(() => this.onEnd(winner), 1800);
+    setTimeout(() => this.onEnd({ winner, title, detail }), 1800);
   }
 }

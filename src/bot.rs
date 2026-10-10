@@ -77,15 +77,29 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Versus bot strength, 1 (beginner) ..= 10 (full search, no mistakes).
-    pub fn difficulty(level: u32) -> Self {
+    /// Versus bot strength, 1 (beginner) ..= 10 (full search, no mistakes). Skills unlock with
+    /// level: low levels don't plan quad wells or T-spins at all and misjudge a lot.
+    /// `objective` picks the weights: `Attack` (versus) or `Points` (solo score modes).
+    pub fn difficulty(level: u32, objective: Objective) -> Self {
         let i = level.clamp(1, 10) as usize - 1;
+        let spin_skill = [0.0, 0.0, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.0, 1.0][i];
+        let well_skill = [0.0, 0.0, 0.3, 0.6, 0.8, 1.0, 1.0, 1.0, 1.0, 1.0][i];
+        let base = match objective {
+            Objective::Attack => Weights::versus(),
+            Objective::Points => Weights::default(),
+        };
         Config {
-            width: [1, 1, 2, 4, 8, 16, 24, 32, 48, 64][i],
-            depth: [1, 1, 2, 2, 3, 4, 5, 6, 6, 6][i],
-            noise: [8.0, 5.0, 3.5, 2.5, 1.5, 0.8, 0.4, 0.2, 0.1, 0.0][i],
-            objective: Objective::Attack,
-            weights: Weights::versus(),
+            width: [1, 1, 1, 2, 4, 8, 16, 24, 48, 64][i],
+            depth: [1, 1, 1, 2, 2, 3, 4, 5, 6, 6][i],
+            noise: [14.0, 10.0, 7.0, 4.5, 3.0, 1.8, 1.0, 0.4, 0.15, 0.0][i],
+            objective,
+            weights: Weights {
+                tsd: base.tsd * spin_skill,
+                tst: base.tst * spin_skill,
+                b2b: base.b2b * spin_skill,
+                well: base.well * well_skill,
+                ..base
+            },
             salt: 0,
         }
     }
@@ -207,7 +221,16 @@ fn tops_out(board: &Board, rules: &Rules) -> bool {
     (y - 1..=y).any(|r| board.rows[r as usize] & mask != 0)
 }
 
-fn eval(b: &Board, b2b: bool, w: &Weights) -> f32 {
+fn eval(board: &Board, b2b: bool, w: &Weights) -> f32 {
+    // Cutout (as in Cold Clear): if a T-spin slot is ready, score the board as if the T-spin
+    // happened. Otherwise the slot's covered cells count as holes and setups get punished.
+    let slot = tslot(board);
+    let mut cut = *board;
+    if let Some((x, y, rot, _)) = slot {
+        cut.lock(Piece::T, x, y, rot);
+    }
+    let b = &cut;
+
     let h: [i32; WIDTH as usize] =
         std::array::from_fn(|x| (0..HEIGHT).find(|&y| b.occupied(x as i8, y)).map_or(0, |y| (HEIGHT - y) as i32));
     let holes: usize =
@@ -223,34 +246,47 @@ fn eval(b: &Board, b2b: bool, w: &Weights) -> f32 {
         .unwrap();
     let well_depth = (rim - h[well]).min(4);
     let danger: i32 = h.iter().map(|&v| (v - 10).max(0)).sum();
-    let (tsd, tst) = tslots(b);
+    let spin = match slot {
+        Some((.., 3)) => w.tst,
+        Some((.., 2)) => w.tsd,
+        _ => 0.0,
+    };
 
     w.holes * holes as f32
         + w.bumpiness * bumpiness as f32
         + w.height * h.iter().sum::<i32>() as f32
         + w.danger * danger as f32
         + w.well * well_depth as f32
-        + w.tsd * tsd as u8 as f32
-        + w.tst * tst as u8 as f32
+        + spin
         + w.b2b * b2b as u8 as f32
 }
 
-/// (TSD slot, TST slot) present. Reachability isn't checked; corners are implied by the rows being full.
+/// The best ready T-spin slot as (x, y, rot, lines): a TST if any, else a TSD.
+/// Corners are implied by the rows being full; full reachability isn't checked.
 /// TSD: nose-down T at (x, y) under an overhang completes rows y and y+1.
-/// TST: upright T at (x, y) with its nose in a side notch completes rows y-1..=y+1.
-fn tslots(b: &Board) -> (bool, bool) {
+/// TST: upright T at (x, y), nose in a side notch, completes rows y-1..=y+1; needs a roof over
+/// its column, since the T only gets in through the SRS triple-twist kick.
+fn tslot(b: &Board) -> Option<(i8, i8, u8, u32)> {
     const FULL: u16 = 0x3FF;
     // Only `bits` are missing from row y.
     let only = |y: i8, bits: u16| b.rows[y as usize] | bits == FULL && b.rows[y as usize] & bits == 0;
-    let (mut tsd, mut tst) = (false, false);
+    let mut tsd = None;
     for x in 1..WIDTH - 1 {
         let (t, stem) = (0b111u16 << (x - 1), 1u16 << x);
         for y in 1..HEIGHT - 1 {
-            tsd |= only(y, t) && only(y + 1, stem) && (b.occupied(x - 1, y - 1) || b.occupied(x + 1, y - 1));
-            tst |= only(y - 1, stem) && only(y + 1, stem) && [x - 1, x + 1].iter().any(|&n| only(y, stem | 1 << n));
+            if only(y - 1, stem) && only(y + 1, stem) && (0..y - 1).any(|r| b.occupied(x, r)) {
+                for (n, rot) in [(x - 1, 3), (x + 1, 1)] {
+                    if only(y, stem | 1 << n) {
+                        return Some((x, y, rot, 3));
+                    }
+                }
+            }
+            if tsd.is_none() && only(y, t) && only(y + 1, stem) && (b.occupied(x - 1, y - 1) || b.occupied(x + 1, y - 1)) {
+                tsd = Some((x, y, 2, 2));
+            }
         }
     }
-    (tsd, tst)
+    tsd
 }
 
 /// Totals from one simulated MonochromeRush game.
@@ -312,18 +348,19 @@ mod tests {
         board.rows[39] = 0x3FF & !(1 << 1);
         board.rows[38] = 0x3FF & !0b111;
         board.rows[37] = 1;
-        assert_eq!(tslots(&board), (true, false));
+        assert_eq!(tslot(&board).map(|s| s.3), Some(2));
         let root = Root { board, current: Piece::T, hold: None, can_hold: true, queue: &[Piece::I, Piece::O], b2b: false, combo: -1 };
         let p = suggest(&root, &Rules::monochrome_rush(1), &Config::default()).unwrap();
         assert_eq!((p.piece, p.spin), (Piece::T, Spin::Full));
     }
 
-    /// Versus bots keep their stack low (garbage is coming). Score-tuned weights average ~6 rows
+    /// Versus bots keep their stack low (garbage is coming); T-spin setups cost about half a row.
+    /// Score-tuned weights average ~6 rows
     /// at level 7+ and ~7.5 at level 4, so they fail this.
     #[test]
     fn versus_levels_stack_low() {
-        for (level, max_avg) in [(4, 7.0), (7, 5.0), (10, 5.0)] {
-            let cfg = Config::difficulty(level);
+        for (level, max_avg) in [(4, 7.0), (7, 5.5), (10, 5.5)] {
+            let cfg = Config::difficulty(level, Objective::Attack);
             let (mut sum, mut n) = (0, 0);
             for seed in 0..2 {
                 let mut game = Game::new(Rules::versus(), seed);
@@ -349,7 +386,7 @@ mod tests {
         board.rows[38] = 0x3FF & !0b110;
         board.rows[37] = 0x3FF & !(1 << 2);
         board.rows[35] = 0b1100;
-        assert_eq!(tslots(&board), (false, true));
+        assert_eq!(tslot(&board).map(|s| s.3), Some(3));
         for level in [1, 11] {
             let root = Root { board, current: Piece::T, hold: None, can_hold: true, queue: &[Piece::I, Piece::O], b2b: false, combo: -1 };
             let p = suggest(&root, &Rules::monochrome_rush(level), &Config::default()).unwrap();

@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 
 use crate::board::{Board, HEIGHT};
-use crate::game::{Bag, Rules, attack};
+use crate::game::{Bag, Rules, attack, points};
 use crate::movegen::{Spin, t_spin};
 use crate::piece::Piece;
 
@@ -50,6 +50,9 @@ pub struct Live {
     pub lines: u32,
     pub pieces: u32,
     pub sent: u32,
+    /// Solo modes: score = line-clear points x level (set by the mode).
+    pub level: u32,
+    pub score: f64,
     /// Milliseconds per row of gravity; 0 means 20G.
     pub gravity_ms: f32,
     pub lock_delay_ms: f32,
@@ -82,6 +85,8 @@ impl Live {
             lines: 0,
             pieces: 0,
             sent: 0,
+            level: 1,
+            score: 0.0,
             gravity_ms,
             lock_delay_ms,
             events: vec![],
@@ -298,6 +303,8 @@ impl Live {
         self.colors[..dst].fill([0; 10]);
         let perfect_clear = lines > 0 && self.board.is_empty();
         let b2b_before = self.b2b;
+        let (mut b2b, mut combo) = (self.b2b, self.combo);
+        self.score += (points(lines, spin, &mut b2b, &mut combo) * self.level as f32) as f64;
         let mut out = attack(lines, spin, &mut self.b2b, &mut self.combo, perfect_clear);
 
         // Outgoing attack cancels incoming garbage first.

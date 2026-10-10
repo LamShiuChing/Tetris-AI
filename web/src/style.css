@@ -143,6 +143,18 @@ button.big {
 button.big.alt {
   background: var(--sky);
 }
+button.big.pink {
+  background: var(--pink);
+}
+select {
+  font: inherit;
+  font-size: 15px;
+  border-radius: 10px;
+  padding: 2px 6px;
+  background: #241a55;
+  color: #fff;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+}
 button.big:hover {
   transform: translateY(-3px) scale(1.03);
 }

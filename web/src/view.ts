@@ -168,7 +168,7 @@ export class BoardView extends Container {
     this.danger.alpha = this.isDanger ? 0.08 + 0.06 * Math.sin(this.time / 120) : 0;
   }
 
-  render(s: Snapshot, target: { piece: number; x: number; y: number; rot: number } | null, pps: number) {
+  render(s: Snapshot, target: { piece: number; x: number; y: number; rot: number } | null, stats: string) {
     for (let r = FIRST_ROW; r < 40; r++) {
       for (let c = 0; c < 10; c++) {
         const sprite = this.cells[(r - FIRST_ROW) * 10 + c];
@@ -197,7 +197,7 @@ export class BoardView extends Container {
       const glow = s.pending >= 8 ? 0.75 + 0.25 * Math.sin(this.time / 80) : 1;
       this.meter.roundRect(0, H - pending * CELL, 10, pending * CELL, 5).fill({ color, alpha: glow });
     }
-    this.stats.text = `SENT ${s.sent}  ·  LINES ${s.lines}  ·  ${pps.toFixed(2)} PPS`;
+    this.stats.text = stats;
   }
 
   private place(sprites: Sprite[], piece: number, x: number, y: number, rot: number, style: (s: Sprite) => void) {

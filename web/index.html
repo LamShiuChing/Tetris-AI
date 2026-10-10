@@ -23,6 +23,11 @@
           <label>Opponent <input type="range" id="vsLevel" min="1" max="10" value="4" /> <b id="vsLevelName"></b></label>
         </section>
         <section class="card">
+          <button id="solo" class="big pink">SOLO</button>
+          <label>Mode <select id="soloMode"><option value="marathon">Marathon · 150 lines</option><option value="master">Master · 20G · 300 lines</option></select> <b></b></label>
+          <label>Player <input type="range" id="soloWho" min="0" max="10" value="0" /> <b id="soloWhoName"></b></label>
+        </section>
+        <section class="card">
           <button id="watch" class="big alt">WATCH BOTS</button>
           <label>Left <input type="range" id="wLeft" min="1" max="10" value="8" /> <b id="wLeftName"></b></label>
           <label>Right <input type="range" id="wRight" min="1" max="10" value="10" /> <b id="wRightName"></b></label>
@@ -44,6 +49,7 @@
 
     <div id="result" class="overlay hidden">
       <h2 id="resultText"></h2>
+      <p id="resultDetail" class="tag"></p>
       <div class="row">
         <button id="again" class="big">REMATCH</button>
         <button id="toMenu" class="big alt">MENU</button>

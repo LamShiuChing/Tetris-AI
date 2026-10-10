@@ -77,7 +77,7 @@ export class Fx {
   }
 
   /** Big bouncy label: pops in with overshoot, hangs, then floats up and fades. */
-  popup(layer: Container, text: string, x: number, y: number, o: { size?: number; color?: number; delay?: number; hold?: number } = {}) {
+  popup(layer: Container, text: string, x: number, y: number, o: { size?: number; color?: number; delay?: number; hold?: number } = {}): Text {
     const t = new Text({
       text,
       style: {
@@ -105,6 +105,7 @@ export class Fx {
       () => t.destroy(),
       (o.delay ?? 0) + 220 + hold,
     );
+    return t;
   }
 
   flashRect(layer: Container, x: number, y: number, w: number, h: number, color = 0xffffff, dur = 260) {

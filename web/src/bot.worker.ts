@@ -13,6 +13,10 @@ export interface PlanRequest {
   difficulty: number;
   /** Varies the bot's mistakes so two bots at one level don't mirror each other. */
   salt: number;
+  /** Plan as if every action falls to the floor (20G, or fast gravity the bot sonic-drops through). */
+  twentyG: boolean;
+  /** Solo score modes optimize points; versus optimizes attack. */
+  solo: boolean;
 }
 
 /** [piece, x, y, rot, spin, n, inputs...] or empty when every placement tops out. */
@@ -30,7 +34,7 @@ ctx.onmessage = async (e: MessageEvent<PlanRequest>) => {
   const r = e.data;
   new Uint16Array(w.memory.buffer, w.board_ptr(), 40).set(r.rows);
   new Uint8Array(w.memory.buffer, w.queue_ptr(), r.queue.length).set(r.queue);
-  const len = w.plan(r.current, r.hold < 0 ? 7 : r.hold, r.canHold ? 1 : 0, r.queue.length, r.b2b ? 1 : 0, r.combo, r.difficulty, r.salt);
+  const len = w.plan(r.current, r.hold < 0 ? 7 : r.hold, r.canHold ? 1 : 0, r.queue.length, r.b2b ? 1 : 0, r.combo, r.difficulty, r.salt, (r.twentyG ? 1 : 0) | (r.solo ? 2 : 0));
   const out = Array.from(new Int8Array(w.memory.buffer, w.out_ptr(), len));
   ctx.postMessage({ id: r.id, out } satisfies PlanResponse);
 };

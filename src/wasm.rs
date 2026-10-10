@@ -8,8 +8,8 @@
 //! reading state from `live_snapshot` and effects from `live_events` + `events_ptr()`.
 
 use crate::board::{Board, HEIGHT};
-use crate::bot::{self, Config, Root};
-use crate::game::Rules;
+use crate::bot::{self, Config, Objective, Root};
+use crate::game::{Gravity, Rules};
 use crate::live::{Event, Live};
 use crate::movegen::Placement;
 use crate::piece::Piece;
@@ -54,14 +54,17 @@ pub extern "C" fn suggest(current: u32, hold: u32, can_hold: u32, queue_len: u32
     write_out(bot::suggest(&root, &Rules::monochrome_rush(level), &Config::default()))
 }
 
-/// Stackfall versus bot at `difficulty` 1..=10; `salt` varies its mistakes so two bots don't mirror.
-/// Same inputs and output as `suggest`.
+/// Stackfall bot at `difficulty` 1..=10; `salt` varies its mistakes so two bots don't mirror.
+/// `flags`: bit 0 = plan for 20G (every action falls to the floor), bit 1 = solo score objective
+/// instead of versus attack. Same inputs and output as `suggest`.
 #[unsafe(no_mangle)]
-pub extern "C" fn plan(current: u32, hold: u32, can_hold: u32, queue_len: u32, b2b: u32, combo: i32, difficulty: u32, salt: u32) -> u32 {
+pub extern "C" fn plan(current: u32, hold: u32, can_hold: u32, queue_len: u32, b2b: u32, combo: i32, difficulty: u32, salt: u32, flags: u32) -> u32 {
     let queue = read_queue(queue_len);
     let root = read_root(current, hold, can_hold, &queue, b2b, combo);
-    let cfg = Config { salt: salt as u64, ..Config::difficulty(difficulty) };
-    write_out(bot::suggest(&root, &Rules::versus(), &cfg))
+    let objective = if flags & 2 != 0 { Objective::Points } else { Objective::Attack };
+    let cfg = Config { salt: salt as u64, ..Config::difficulty(difficulty, objective) };
+    let gravity = if flags & 1 != 0 { Gravity::TwentyG } else { Gravity::Zero };
+    write_out(bot::suggest(&root, &Rules { gravity, ..Rules::versus() }, &cfg))
 }
 
 fn read_queue(len: u32) -> Vec<Piece> {
@@ -145,9 +148,20 @@ pub extern "C" fn live_set_gravity(slot: u32, gravity_ms: f32) {
     game(slot).gravity_ms = gravity_ms;
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn live_set_lock_delay(slot: u32, ms: f32) {
+    game(slot).lock_delay_ms = ms;
+}
+
+/// Solo modes: the level multiplies line-clear points.
+#[unsafe(no_mangle)]
+pub extern "C" fn live_set_level(slot: u32, level: u32) {
+    game(slot).level = level;
+}
+
 /// i32 layout: [0..40) rows, 40 piece (-1 none), 41 x, 42 y, 43 rot, 44 ghost y, 45 hold (-1 none),
 /// 46 can hold, 47..52 queue, 52 b2b, 53 combo, 54 pending garbage, 55 over, 56 lock progress (0..1000),
-/// 57 lines, 58 pieces, 59 lines sent.
+/// 57 lines, 58 pieces, 59 lines sent, 60 score, 61 level.
 #[unsafe(no_mangle)]
 pub extern "C" fn live_snapshot(slot: u32) -> *const i32 {
     let g = game(slot);
@@ -172,6 +186,8 @@ pub extern "C" fn live_snapshot(slot: u32) -> *const i32 {
         g.pieces as i32,
         g.sent as i32,
     ]);
+    s[60] = g.score as i32;
+    s[61] = g.level as i32;
     s.as_ptr()
 }
 

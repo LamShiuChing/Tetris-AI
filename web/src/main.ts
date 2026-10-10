@@ -4,7 +4,7 @@ import { LEVELS, Planner } from './bot';
 import { loadEngine } from './engine';
 import { Fx } from './fx';
 import { Controls, DEFAULT_HANDLING } from './input';
-import { Match, type MatchConfig } from './match';
+import { Match, type MatchConfig, type Mode } from './match';
 import { makeTextures } from './view';
 
 /** Everything is laid out on a 1280x720 stage, scaled to fit the window. */
@@ -59,9 +59,9 @@ async function main() {
     root.addChild(match);
     $('menu').classList.add('hidden');
     $('result').classList.add('hidden');
-    match.onEnd = (winner) => {
-      const human = cfg.sides.findIndex((s) => s.kind === 'human');
-      $('resultText').textContent = human < 0 ? (winner === 0 ? 'LEFT BOT WINS' : 'RIGHT BOT WINS') : winner === human ? 'YOU WIN!' : 'YOU LOSE';
+    match.onEnd = (r) => {
+      $('resultText').textContent = r.title;
+      $('resultDetail').textContent = r.detail;
       $('result').classList.remove('hidden');
     };
   };
@@ -97,6 +97,7 @@ async function main() {
   bindRange('vsLevel', levelName, () => {}, Number(localStorage.getItem('stackfall.vs') ?? 4));
   bindRange('wLeft', levelName, () => {}, 8);
   bindRange('wRight', levelName, () => {}, 10);
+  bindRange('soloWho', (v) => (v === 0 ? 'You' : `Bot · ${levelName(v)}`), () => {}, 0);
   bindRange('speed', (v) => `${v}x`, () => {}, 1);
   bindRange('das', (v) => `${v} ms`, (v) => (settings.handling.das = v), settings.handling.das);
   bindRange('arr', (v) => (v === 0 ? 'instant' : `${v} ms`), (v) => (settings.handling.arr = v), settings.handling.arr);
@@ -107,10 +108,20 @@ async function main() {
   const num = (id: string) => Number($<HTMLInputElement>(id).value);
   $('vs').onclick = () => {
     localStorage.setItem('stackfall.vs', String(num('vsLevel')));
-    start({ sides: [{ kind: 'human' }, { kind: 'bot', level: num('vsLevel') }], showPlan: false, speed: 1 });
+    start({ mode: 'versus', sides: [{ kind: 'human' }, { kind: 'bot', level: num('vsLevel') }], showPlan: false, speed: 1 });
+  };
+  $('solo').onclick = () => {
+    const who = num('soloWho');
+    start({
+      mode: $<HTMLSelectElement>('soloMode').value as Mode,
+      sides: [who === 0 ? { kind: 'human' } : { kind: 'bot', level: who }],
+      showPlan: who !== 0 && $<HTMLInputElement>('plan').checked,
+      speed: who === 0 ? 1 : num('speed'),
+    });
   };
   $('watch').onclick = () =>
     start({
+      mode: 'versus',
       sides: [
         { kind: 'bot', level: num('wLeft') },
         { kind: 'bot', level: num('wRight') },
