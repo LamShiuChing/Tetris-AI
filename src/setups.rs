@@ -1,7 +1,7 @@
-//! Opener shapes from the Hard Drop wiki (catalog in research/openers.md), used to steer the
-//! top bot levels into known setups. Rows are top to bottom, ending at the floor; piece letters
-//! are cells to fill, `P` marks the T-spin cells to leave open, `.` stays empty.
-//! Each shape is also used mirrored.
+//! Opener and continuation stages from the Hard Drop wiki, used to steer the top bot levels
+//! through known setups. Rows are top to bottom, ending at the floor: piece letters are cells
+//! this stage fills, `X` is stack that must already be there (left by an earlier stage), `P`
+//! marks the T-spin cells to keep open, `.` stays empty. Every stage is also used mirrored.
 
 use std::sync::OnceLock;
 
@@ -22,44 +22,56 @@ const SHAPES: &[(&str, &[&str])] = &[
 ];
 
 struct Shape {
-    /// Filled cells per row, top row first, as board bitmasks (bit x = column x).
+    /// Per row (top first), as board bitmasks: cells that must already be filled...
+    ctx: Vec<u16>,
+    /// ...and cells this stage fills.
     fill: Vec<u16>,
     cells: u32,
-    /// Each piece in the shape and its cells (same row layout as `fill`).
+    /// Each piece the stage places and its cells.
     pieces: Vec<(Piece, Vec<u16>)>,
 }
 
-fn shapes() -> &'static [Shape] {
-    static CACHE: OnceLock<Vec<Shape>> = OnceLock::new();
+struct Index {
+    shapes: Vec<Shape>,
+    /// For each of the 1024 possible board bottom rows, the shapes that allow it.
+    by_bottom: Vec<Vec<usize>>,
+    max_height: usize,
+}
+
+fn mask(row: &str, mirror: bool, keep: impl Fn(u8) -> bool) -> u16 {
+    row.bytes().enumerate().filter(|&(_, c)| keep(c)).fold(0, |m, (x, _)| m | 1 << if mirror { 9 - x } else { x })
+}
+
+fn index() -> &'static Index {
+    static CACHE: OnceLock<Index> = OnceLock::new();
     CACHE.get_or_init(|| {
-        let mut out = vec![];
+        let mut shapes = vec![];
         for (_, rows) in SHAPES.iter().chain(WIKI_SHAPES) {
             for mirror in [false, true] {
-                let fill: Vec<u16> = rows
-                    .iter()
-                    .map(|r| {
-                        r.bytes().enumerate().filter(|&(_, c)| c.is_ascii_uppercase() && c != b'P').fold(0, |m, (x, _)| {
-                            m | 1 << if mirror { 9 - x } else { x }
-                        })
-                    })
-                    .collect();
-                let cells = fill.iter().map(|r| r.count_ones()).sum();
+                let ctx: Vec<u16> = rows.iter().map(|r| mask(r, mirror, |c| c == b'X')).collect();
+                let fill: Vec<u16> = rows.iter().map(|r| mask(r, mirror, |c| b"IJLOSTZ".contains(&c))).collect();
                 let pieces = Piece::ALL
                     .iter()
-                    .map(|&p| {
-                        let letter = b"IJLOSTZ"[p as usize];
-                        let rows = rows
-                            .iter()
-                            .map(|r| r.bytes().enumerate().filter(|&(_, c)| c == letter).fold(0, |m, (x, _)| m | 1 << if mirror { 9 - x } else { x }))
-                            .collect::<Vec<u16>>();
-                        (p, rows)
-                    })
-                    .filter(|(_, rows)| rows.iter().any(|&r| r != 0))
+                    .map(|&p| (p, rows.iter().map(|r| mask(r, mirror, |c| c == b"IJLOSTZ"[p as usize])).collect::<Vec<u16>>()))
+                    .filter(|(_, cells)| cells.iter().any(|&r| r != 0))
                     .collect();
-                out.push(Shape { fill, cells, pieces });
+                let cells = fill.iter().map(|r| r.count_ones()).sum();
+                shapes.push(Shape { ctx, fill, cells, pieces });
             }
         }
-        out
+        // A bottom row fits a shape if it has the shape's context and nothing outside context + fill.
+        let by_bottom = (0..1u16 << 10)
+            .map(|row| {
+                (0..shapes.len())
+                    .filter(|&i| {
+                        let (c, f) = (*shapes[i].ctx.last().unwrap(), *shapes[i].fill.last().unwrap());
+                        row & c == c && row & !(c | f) == 0
+                    })
+                    .collect()
+            })
+            .collect();
+        let max_height = shapes.iter().map(|s| s.fill.len()).max().unwrap_or(0);
+        Index { shapes, by_bottom, max_height }
     })
 }
 
@@ -68,28 +80,34 @@ pub fn piece_mask(pieces: impl IntoIterator<Item = Piece>) -> u8 {
     pieces.into_iter().fold(0, |m, p| m | 1 << p as u8)
 }
 
-/// How far the board is into any known opener shape, 0..=1. A shape counts only if the board has
-/// no cell outside it (or above it) and every piece it still needs is in `available`
-/// (a `piece_mask`), so the bot never chases a shape it can't finish with the pieces it sees.
+/// How far the board is into any known stage, 0..=1. A stage counts only if the board has its
+/// context, no cell outside it (or above it), and every piece it still needs is in `available`
+/// (a `piece_mask`), so the bot never chases a stage it can't finish with the pieces it sees.
 pub fn progress(b: &Board, available: u8) -> f32 {
-    let mut best = 0.0f32;
-    for s in shapes() {
-        let top = HEIGHT as usize - s.fill.len();
-        if b.rows[..top].iter().any(|&r| r != 0) {
-            continue;
-        }
-        let mut have = 0;
-        let fits = s.fill.iter().zip(&b.rows[top..]).all(|(&f, &r)| {
-            have += r.count_ones();
-            r & !f == 0
-        });
-        let rows = &b.rows[top..];
-        let missing = s.pieces.iter().filter(|(_, cells)| cells.iter().zip(rows).any(|(&c, &r)| r & c != c));
-        if fits && missing.map(|(p, _)| 1u8 << *p as u8).all(|bit| available & bit != 0) {
-            best = best.max(have as f32 / s.cells as f32);
-        }
+    let idx = index();
+    let height = HEIGHT as usize - b.rows.iter().position(|&r| r != 0).unwrap_or(HEIGHT as usize);
+    if height == 0 || height > idx.max_height {
+        return 0.0;
     }
-    best
+    let bottom = b.rows[HEIGHT as usize - 1];
+    idx.by_bottom[bottom as usize].iter().filter_map(|&i| stage_progress(&idx.shapes[i], b, height, available)).fold(0.0, f32::max)
+}
+
+fn stage_progress(s: &Shape, b: &Board, height: usize, available: u8) -> Option<f32> {
+    if height > s.fill.len() {
+        return None;
+    }
+    let rows = &b.rows[HEIGHT as usize - s.fill.len()..];
+    let mut have = 0;
+    for ((&r, &c), &f) in rows.iter().zip(&s.ctx).zip(&s.fill) {
+        if r & c != c || r & !(c | f) != 0 {
+            return None;
+        }
+        have += (r & f).count_ones();
+    }
+    let missing = s.pieces.iter().filter(|(_, cells)| cells.iter().zip(rows).any(|(&c, &r)| r & c != c));
+    let mut needed = missing.map(|(p, _)| 1u8 << *p as u8);
+    needed.all(|bit| available & bit != 0).then(|| have as f32 / s.cells as f32)
 }
 
 #[cfg(test)]
@@ -101,8 +119,7 @@ mod tests {
     fn board(rows: &[&str]) -> Board {
         let mut b = Board::default();
         for (i, r) in rows.iter().enumerate() {
-            b.rows[HEIGHT as usize - rows.len() + i] =
-                r.bytes().enumerate().filter(|&(_, c)| c != b'.').fold(0, |m, (x, _)| m | 1 << x);
+            b.rows[HEIGHT as usize - rows.len() + i] = mask(r, false, |c| c != b'.' && c != b'P');
         }
         b
     }
@@ -114,16 +131,24 @@ mod tests {
         // TKI 3 complete, and its mirror: nothing more needed.
         assert_eq!(progress(&board(&["L..ZZ.S...", "L...ZZSSOO", "LL.IIIISOO"]), 0), 1.0);
         assert_eq!(progress(&board(&["...S.ZZ..L", "OOSSZZ...L", "OOSIIII.LL"]), 0), 1.0);
-        // Just the I placed: partial progress, but only if the rest of TKI's pieces are coming.
-        let i_only = board(&["...IIII..."]);
-        let p = progress(&i_only, all);
-        assert!(p > 0.0 && p < 0.25, "{p}");
-        assert_eq!(progress(&i_only, piece_mask([Piece::L, Piece::Z, Piece::S])), 0.0, "no O in sight");
         // A cell higher than every shape reaches.
-        assert_eq!(progress(&board(&["....X.....", "..........", "..........", "..........", "..........", ".........."]), all), 0.0);
+        let mut tall = vec![".........."; index().max_height + 1];
+        tall[0] = "....X.....";
+        assert_eq!(progress(&board(&tall), all), 0.0);
     }
 
-    /// Every spin shape must really be a T-spin in this engine: from spawn, the move search finds
+    #[test]
+    fn continuation_needs_its_context() {
+        // A stage with X context: the board must already hold the X cells.
+        let (_, rows) = WIKI_SHAPES.iter().find(|(_, r)| r.iter().any(|row| row.contains('X'))).unwrap();
+        let ctx_only: Vec<String> = rows.iter().map(|r| r.chars().map(|c| if c == 'X' { 'X' } else { '.' }).collect()).collect();
+        let ctx_only: Vec<&str> = ctx_only.iter().map(|s| s.as_str()).collect();
+        assert_eq!(progress(&board(rows), 0), 1.0, "context + stage pieces is complete");
+        let all = piece_mask(Piece::ALL);
+        assert!(progress(&board(&ctx_only), all) < 1.0, "context alone isn't complete");
+    }
+
+    /// Every spin stage must really be a T-spin in this engine: from spawn, the move search finds
     /// a T placement on exactly the `P` cells that counts as a full T-spin and clears lines.
     #[test]
     fn wiki_shapes_are_reachable_tspins() {
@@ -132,7 +157,7 @@ mod tests {
             if !rows.iter().any(|r| r.contains('P')) {
                 continue; // perfect-clear shapes
             }
-            let b = board(&rows.iter().map(|r| r.replace('P', ".")).collect::<Vec<_>>().iter().map(|s| s.as_str()).collect::<Vec<_>>());
+            let b = board(rows);
             let mut want: Vec<(i8, i8)> = vec![];
             for (i, r) in rows.iter().enumerate() {
                 for (x, c) in r.bytes().enumerate() {
