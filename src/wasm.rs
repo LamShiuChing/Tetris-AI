@@ -58,14 +58,14 @@ pub extern "C" fn suggest(current: u32, hold: u32, can_hold: u32, queue_len: u32
 
 /// Stackfall bot at `difficulty` 1..=10; `salt` varies its mistakes so two bots don't mirror.
 /// `flags`: bit 0 = plan for 20G (every action falls to the floor), bit 1 = solo score objective
-/// instead of versus attack. `pending` = incoming garbage lines; `bag` = piece types left in the
-/// current bag after the queue (snapshot index 62). Same output as `suggest`.
+/// instead of versus attack, bits 2-11 = kind of the bot's last clearing trick (`bot::clear_kind`).
+/// `pending` = incoming garbage lines; `bag` = piece types left in the current bag after the queue (snapshot index 62). Same output as `suggest`.
 #[unsafe(no_mangle)]
 pub extern "C" fn plan(current: u32, hold: u32, can_hold: u32, queue_len: u32, b2b: u32, combo: i32, difficulty: u32, salt: u32, flags: u32, pending: u32, bag: u32) -> u32 {
     let queue = read_queue(queue_len);
     let root = read_root(current, hold, can_hold, &queue, b2b, combo, pending, bag as u8);
     let objective = if flags & 2 != 0 { Objective::Points } else { Objective::Attack };
-    let cfg = Config { salt: salt as u64, ..Config::difficulty(difficulty, objective) };
+    let cfg = Config { salt: salt as u64, last_trick: flags >> 2 & 0x3FF, ..Config::difficulty(difficulty, objective) };
     let gravity = if flags & 1 != 0 { Gravity::TwentyG } else { Gravity::Zero };
     let Some((p, plan)) = suggest_with_plan(&root, &Rules { gravity, ..Rules::versus() }, &cfg) else { return 0 };
     // After the inputs: the setup the chosen line works on (0xFFFF = none) and its trick bits.
@@ -256,7 +256,7 @@ pub extern "C" fn live_events(slot: u32) -> u32 {
             Event::SoftDrop => [3, 0, 0, 0, 0, 0, 0, 0],
             Event::Hold => [4, 0, 0, 0, 0, 0, 0, 0],
             Event::HardDrop { rows } => [5, rows as i32, 0, 0, 0, 0, 0, 0],
-            Event::Lock { at, lines, spin, combo, b2b, perfect_clear, sent, cleared, .. } => [
+            Event::Lock { at, lines, spin, all_spin, combo, b2b, perfect_clear, sent, cleared, .. } => [
                 6,
                 lines as i32,
                 spin as i32,
@@ -266,7 +266,8 @@ pub extern "C" fn live_events(slot: u32) -> u32 {
                     | (at.piece as i32) << 2
                     | (at.rot as i32) << 5
                     | (at.x as i32 + 2) << 7
-                    | (at.y as i32 + 4) << 12,
+                    | (at.y as i32 + 4) << 12
+                    | (all_spin as i32) << 18,
                 sent as i32,
                 cleared as u32 as i32,
                 (cleared >> 32) as i32,

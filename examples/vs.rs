@@ -1,13 +1,17 @@
 //! Bot-vs-bot win rate on the headless versus engine (real garbage, equal speed). Each seed is
 //! played twice with seats swapped. `cargo run --release --example vs [seeds] [variant] [beam width]`.
 
-use tetris_ai::bot::{CHAINLORD, Config, Objective, PERFECTIONIST, RENEGADE, Specialty, TRICKSTER, Weights};
+use tetris_ai::bot::{CHAINLORD, Config, Objective, PERFECTIONIST, RENEGADE, Specialty, TRICKSTER, VIRTUOSO, Weights};
 use tetris_ai::versus::play_match;
 
 const MAX_PIECES: u32 = 400;
 
 fn configs(variant: &str, width: usize) -> [(&'static str, Config); 2] {
-    let base = Config { width, ..Config::difficulty(10, Objective::Attack) };
+    // OPP_LEVEL=n: the opponent ("Titan" in the labels) is level n at its own width instead.
+    let base = match std::env::var("OPP_LEVEL") {
+        Ok(l) => Config::difficulty(l.parse().unwrap(), Objective::Attack),
+        Err(_) => Config { width, ..Config::difficulty(10, Objective::Attack) },
+    };
     match variant {
         "garbage" => [("garbage-aware", base.clone()), ("garbage-blind", Config { sees_garbage: false, ..base })],
         "speculate" => [("speculating", base.clone()), ("not speculating", Config { speculate: false, ..base })],
@@ -16,12 +20,13 @@ fn configs(variant: &str, width: usize) -> [(&'static str, Config); 2] {
         "trickster" => [("Trickster", tuned(Config::difficulty(TRICKSTER, Objective::Attack))), ("Titan", base)],
         "chainlord" => [("Chainlord", tuned(Config::difficulty(CHAINLORD, Objective::Attack))), ("Titan", base)],
         "renegade" => [("Renegade", tuned(Config { width, ..Config::difficulty(RENEGADE, Objective::Attack) })), ("Titan", base)],
+        "virtuoso" => [("Virtuoso", tuned(Config { width, ..Config::difficulty(VIRTUOSO, Objective::Attack) })), ("Titan", base)],
         "perfectionist" => [("Perfectionist", tuned(Config { width, ..Config::difficulty(PERFECTIONIST, Objective::Attack) })), ("Titan", base)],
         "dedupe" => [("merging duplicate states", base.clone()), ("no merging", Config { dedupe: false, ..base })],
         "width128" => [("beam 128", Config { width: 128, ..base.clone() }), ("beam 64", base)],
         "b2b" => [("B2B policy", base.clone()), ("no B2B policy", Config { weights: Weights { b2b_break: 0.0, ..base.weights.clone() }, ..base })],
         "tuned" => [("tuned versus weights", base.clone()), ("hand-picked", Config { weights: hand(), ..base })],
-        _ => panic!("variant: trickster | chainlord | renegade | perfectionist | garbage | speculate | setups | dedupe | width128 | b2b | net | tuned"),
+        _ => panic!("variant: trickster | chainlord | renegade | perfectionist | virtuoso | garbage | speculate | setups | dedupe | width128 | b2b | net | tuned"),
     }
 }
 
@@ -116,7 +121,7 @@ fn main() {
     for (i, name) in [a_name, b_name].into_iter().enumerate() {
         let avg = |f: fn(&tetris_ai::versus::Style) -> u32| results.iter().map(|r| f(&r.style[i]) as f64).sum::<f64>() / n;
         println!(
-            "  {name:>10}: per match TSD {:.1}  TST {:.2}  PC {:.2}  setup fires {:.2} ({:.2} distinct)  B2B clears {:.1} / breaks {:.1}  longest B2B {:.1}  max combo {:.1}  trick kinds {:.1}",
+            "  {name:>10}: per match TSD {:.1}  TST {:.2}  PC {:.2}  setup fires {:.2} ({:.2} distinct)  B2B clears {:.1} / breaks {:.1}  longest B2B {:.1}  max combo {:.1}  trick kinds {:.1}  fouls {:.1} ({:.1} repeats)",
             avg(|s| s.tsd),
             avg(|s| s.tst),
             avg(|s| s.pc),
@@ -127,6 +132,8 @@ fn main() {
             avg(|s| s.max_b2b),
             avg(|s| s.max_combo),
             avg(|s| s.tricks.count_ones()),
+            avg(|s| s.fouls),
+            avg(|s| s.repeats),
         );
     }
 }

@@ -29,6 +29,9 @@ pub struct Placement {
     pub y: i8,
     pub rot: u8,
     pub spin: Spin,
+    /// A non-T piece whose last move was a rotation into a spot it can't leave (only found with
+    /// `Rules::all_spin`). Shown and counted as a trick; the game scores it like a plain clear.
+    pub all_spin: bool,
     pub inputs: Vec<Input>,
 }
 
@@ -87,13 +90,14 @@ fn search(board: &Board, piece: Piece, rules: &Rules, want_inputs: bool) -> Vec<
         head += 1;
         if board.collides(piece, s.x, s.y + 1, s.rot) {
             let spin = spin(board, piece, s);
+            let all_spin = rules.all_spin && s.rotated && all_spin(board, piece, s.x, s.y, s.rot);
             let mut cells = piece.cells(s.x, s.y, s.rot);
             cells.sort();
-            let key = cells.iter().fold(spin as u64, |k, &(cx, cy)| k << 10 | ((cx as u64) << 6 | (cy as i32 + 4) as u64));
+            let key = cells.iter().fold(spin as u64 | (all_spin as u64) << 2, |k, &(cx, cy)| k << 10 | ((cx as u64) << 6 | (cy as i32 + 4) as u64));
             if !locked.contains(&key) {
                 locked.push(key);
                 let inputs = if want_inputs { path(&parent, &queue, s) } else { vec![] };
-                out.push(Placement { piece, x: s.x, y: s.y, rot: s.rot, spin, inputs });
+                out.push(Placement { piece, x: s.x, y: s.y, rot: s.rot, spin, all_spin, inputs });
             }
         }
         let si = index(s).unwrap() as u16;
@@ -167,6 +171,12 @@ fn spin(board: &Board, piece: Piece, s: State) -> Spin {
         return Spin::None;
     }
     t_spin(board, s.x, s.y, s.rot)
+}
+
+/// All-spin test for a piece that got here by rotating: not a T (those use `t_spin`) or an O, and
+/// stuck: it can't shift left, right or up.
+pub(crate) fn all_spin(board: &Board, piece: Piece, x: i8, y: i8, rot: u8) -> bool {
+    !matches!(piece, Piece::T | Piece::O) && [(-1, 0), (1, 0), (0, -1)].iter().all(|&(dx, dy)| board.collides(piece, x + dx, y + dy, rot))
 }
 
 /// 3-corner rule for a T at this pose whose last move was a rotation, mirroring MonochromeRush `Game.isTSpin`.

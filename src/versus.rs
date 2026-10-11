@@ -2,18 +2,22 @@
 //! one piece each per turn (equal speed). Attacks from a turn land after both have moved, so
 //! neither side gets a first-mover edge. For tuning and benchmarking on win rate.
 
-use crate::bot::{Config, Root, suggest_with_plan, trick};
+use crate::bot::{Config, Root, clear_kind, suggest_with_plan, trick};
 use crate::game::Rules;
 use crate::live::{Event, Live};
 use crate::movegen::{Input, Placement, Spin};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct MatchResult {
     /// None = draw (both survived `max_pieces` and sent the same).
     pub winner: Option<usize>,
     pub pieces: u32,
     pub sent: [u32; 2],
     pub style: [Style; 2],
+    /// Per side, setup stages (`setups::setup_name` ids) whose T-spin it fired (repeats included),
+    /// and the distinct stages it steered toward at some point.
+    pub fires: [Vec<u32>; 2],
+    pub attempts: [Vec<u32>; 2],
 }
 
 /// What each side actually did, for comparing personalities.
@@ -35,15 +39,22 @@ pub struct Style {
     pub max_combo: u32,
     /// Longest run of back-to-back-eligible clears (quads, T-spins) with no plain clear between.
     pub max_b2b: u32,
+    /// Clears that weren't a trick, or repeated the previous trick's kind (what `tricks_only` avoids);
+    /// `repeats` counts the second kind alone.
+    pub fouls: u32,
+    pub repeats: u32,
     chain: u32,
 }
 
 /// Per-side memory the trick style uses to avoid repeating itself.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Memory {
     recent_tricks: std::collections::VecDeque<u32>,
     recent_stages: std::collections::VecDeque<u32>,
     fired: Vec<u32>,
+    fires: Vec<u32>,
+    attempts: Vec<u32>,
+    last_trick: u32,
 }
 
 /// Anything that can choose moves in a versus match: our bot, or an external one (Cold Clear over
@@ -51,14 +62,15 @@ struct Memory {
 pub trait Brain {
     /// A placement for the active piece or its hold swap (with the inputs that reach it), and the
     /// named setup it is working on, if any. None = no legal move (the game hard drops).
-    fn choose(&mut self, g: &Live, recent_tricks: u32, recent_stages: &[u32]) -> Option<(Placement, Option<u32>)>;
+    /// `last_trick`: kind of this side's last clearing trick (`trick` bit, 0 = none).
+    fn choose(&mut self, g: &Live, recent_tricks: u32, recent_stages: &[u32], last_trick: u32) -> Option<(Placement, Option<u32>)>;
 }
 
 /// Our bot as a `Brain`.
 pub struct BotBrain(pub Config);
 
 impl Brain for BotBrain {
-    fn choose(&mut self, g: &Live, recent_tricks: u32, recent_stages: &[u32]) -> Option<(Placement, Option<u32>)> {
+    fn choose(&mut self, g: &Live, recent_tricks: u32, recent_stages: &[u32], last_trick: u32) -> Option<(Placement, Option<u32>)> {
         let active = g.active?;
         let queue: Vec<_> = g.queue.iter().copied().collect();
         let root = Root {
@@ -75,6 +87,7 @@ impl Brain for BotBrain {
         let mut cfg = self.0.clone();
         cfg.recent_tricks = recent_tricks;
         cfg.recent_stages = recent_stages.to_vec();
+        cfg.last_trick = last_trick;
         suggest_with_plan(&root, &Rules::versus(), &cfg).map(|(p, plan)| (p, plan.stage))
     }
 }
@@ -122,8 +135,11 @@ pub fn play_brains(brains: [&mut dyn Brain; 2], seed: u64, max_pieces: u32, obse
             let recent_tricks = memory[i].recent_tricks.iter().fold(0, |m, &t| m | t);
             let recent_stages: Vec<u32> = memory[i].recent_stages.iter().copied().collect();
             let b2b_before = g.b2b;
-            let chosen = brains[i].choose(g, recent_tricks, &recent_stages);
+            let chosen = brains[i].choose(g, recent_tricks, &recent_stages, memory[i].last_trick);
             let planned_stage = chosen.as_ref().and_then(|c| c.1);
+            if let Some(s) = planned_stage.filter(|s| !memory[i].attempts.contains(s)) {
+                memory[i].attempts.push(s);
+            }
             let held = chosen.as_ref().is_some_and(|(p, _)| p.piece != active.piece);
             match &chosen {
                 Some((p, _)) => {
@@ -147,14 +163,20 @@ pub fn play_brains(brains: [&mut dyn Brain; 2], seed: u64, max_pieces: u32, obse
             let (mut sent_now, mut raw, mut risen) = (0, 0, 0);
             for e in g.events.drain(..) {
                 match e {
-                    Event::Lock { attack, sent, lines, spin, combo, perfect_clear, .. } => {
+                    Event::Lock { at, attack, sent, lines, spin, all_spin, combo, perfect_clear, .. } => {
                         (raw, sent_now) = (raw + attack, sent_now + sent);
                         style[i].max_combo = style[i].max_combo.max(combo.max(0) as u32);
                         if lines > 0 {
+                            let kind = clear_kind(lines, spin, perfect_clear, all_spin.then_some(at.piece));
+                            style[i].fouls += (kind == 0 || kind == memory[i].last_trick) as u32;
+                            style[i].repeats += (kind != 0 && kind == memory[i].last_trick) as u32;
+                            if kind != 0 {
+                                memory[i].last_trick = kind;
+                            }
                             style[i].chain = if g.b2b { style[i].chain + 1 } else { 0 };
                             style[i].max_b2b = style[i].max_b2b.max(style[i].chain);
                         }
-                        let done = performed(lines, spin, combo, perfect_clear, b2b_before && g.b2b);
+                        let done = performed(lines, spin, combo, perfect_clear, b2b_before && g.b2b) | if all_spin && lines > 0 { trick::ALLSPIN } else { 0 };
                         style[i].tricks |= done;
                         style[i].tsd += (done & trick::TSD != 0) as u32;
                         style[i].tst += (done & trick::TST != 0) as u32;
@@ -169,6 +191,7 @@ pub fn play_brains(brains: [&mut dyn Brain; 2], seed: u64, max_pieces: u32, obse
                         }
                         if let Some(stage) = planned_stage.filter(|_| spin == Spin::Full && lines > 0) {
                             style[i].setup_fires += 1;
+                            m.fires.push(stage);
                             if !m.fired.contains(&stage) {
                                 m.fired.push(stage);
                             }
@@ -188,7 +211,8 @@ pub fn play_brains(brains: [&mut dyn Brain; 2], seed: u64, max_pieces: u32, obse
         match (games[0].over, games[1].over) {
             (false, false) => {}
             (a, b) => {
-                return MatchResult { winner: if a == b { None } else { Some(a as usize) }, pieces: piece + 1, sent: sent(&games), style: finish(style, &memory) };
+                let (fires, attempts) = setup_log(&memory);
+                return MatchResult { winner: if a == b { None } else { Some(a as usize) }, pieces: piece + 1, sent: sent(&games), style: finish(style, &memory), fires, attempts };
             }
         }
         games[1].receive(attacks[0]);
@@ -196,7 +220,12 @@ pub fn play_brains(brains: [&mut dyn Brain; 2], seed: u64, max_pieces: u32, obse
     }
     let s = sent(&games);
     let winner = if s[0] == s[1] { None } else { Some((s[1] > s[0]) as usize) };
-    MatchResult { winner, pieces: max_pieces, sent: s, style: finish(style, &memory) }
+    let (fires, attempts) = setup_log(&memory);
+    MatchResult { winner, pieces: max_pieces, sent: s, style: finish(style, &memory), fires, attempts }
+}
+
+fn setup_log(memory: &[Memory; 2]) -> ([Vec<u32>; 2], [Vec<u32>; 2]) {
+    (memory.clone().map(|m| m.fires.clone()), memory.clone().map(|m| m.attempts.clone()))
 }
 
 fn finish(mut style: [Style; 2], memory: &[Memory; 2]) -> [Style; 2] {

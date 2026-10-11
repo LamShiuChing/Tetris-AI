@@ -45,11 +45,11 @@ struct Titan {
 }
 
 impl Brain for Titan {
-    fn choose(&mut self, g: &Live, recent_tricks: u32, recent_stages: &[u32]) -> Option<(Placement, Option<u32>)> {
+    fn choose(&mut self, g: &Live, recent_tricks: u32, recent_stages: &[u32], last_trick: u32) -> Option<(Placement, Option<u32>)> {
         let active = g.active?;
         let queue: Vec<_> = g.queue.iter().copied().collect();
         let root = Root { board: g.board, current: active.piece, hold: g.hold, can_hold: g.can_hold, queue: &queue, b2b: g.b2b, combo: g.combo, pending: g.pending_lines(), bag: g.bag_mask() };
-        let cfg = Config { recent_tricks, recent_stages: recent_stages.to_vec(), ..self.cfg.clone() };
+        let cfg = Config { recent_tricks, recent_stages: recent_stages.to_vec(), last_trick, ..self.cfg.clone() };
         let t = Instant::now();
         let (p, plan) = suggest_with_plan(&root, &Rules::versus(), &cfg)?;
         let line: Vec<Value> = plan.line.iter().map(|&(piece, x, y, rot)| json!({ "p": letter(piece), "c": cells(piece, x, y, rot) })).collect();
@@ -111,7 +111,7 @@ fn center_offset(piece: Piece, rot: u8) -> (i8, i8) {
 }
 
 impl Brain for ColdClear {
-    fn choose(&mut self, g: &Live, _: u32, _: &[u32]) -> Option<(Placement, Option<u32>)> {
+    fn choose(&mut self, g: &Live, _: u32, _: &[u32], _: u32) -> Option<(Placement, Option<u32>)> {
         let active = g.active?;
         // Fresh position every move (garbage can change the board between moves); Titan also
         // searches from scratch each move.

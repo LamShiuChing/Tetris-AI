@@ -15,11 +15,12 @@ export const LEVELS = [
   { name: 'Expert', pps: 2.3, inputMs: 32, hold: true },
   { name: 'Legend', pps: 3.0, inputMs: 22, hold: true },
   { name: 'Titan', pps: 4.5, inputMs: 12, hold: true },
-  // Named personalities with Titan's strength (engine levels 11 to 14).
+  // Named personalities with Titan's strength (engine levels 11 to 15).
   { name: 'Trickster', pps: 4.5, inputMs: 12, hold: true },
   { name: 'Chainlord', pps: 4.5, inputMs: 12, hold: true },
   { name: 'Renegade', pps: 4.5, inputMs: 12, hold: true },
   { name: 'Perfectionist', pps: 4.5, inputMs: 12, hold: true },
+  { name: 'Virtuoso', pps: 4.5, inputMs: 12, hold: true },
 ];
 
 /** A bot-thinking worker (one per side); requests are matched to replies by id. */
@@ -67,6 +68,8 @@ export class Bot {
   target: { piece: number; x: number; y: number; rot: number } | null = null;
   /** The named setup its plan is working on (engine setup id), or null. */
   goal: number | null = null;
+  /** Kind of its last clearing trick (engine `trick` bit), set by the match. */
+  lastTrick = 0;
   private plannedFor = -1;
   private thinking = false;
   private actions: number[] = [];
@@ -122,6 +125,7 @@ export class Bot {
       salt: this.salt,
       twentyG,
       solo: physics.solo,
+      lastTrick: this.lastTrick,
       pending: snap.pending,
       bag: snap.bag,
     });

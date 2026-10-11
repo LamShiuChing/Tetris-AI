@@ -18,6 +18,9 @@ pub struct Rules {
     pub spawn: (i8, i8),
     pub preview: usize,
     pub hold: bool,
+    /// Tell apart placements where a non-T piece spun into a spot it can't leave (all-spins, see
+    /// `movegen::all_spin`). Only the tricks-only bot searches with this: it adds placements.
+    pub all_spin: bool,
 }
 
 impl Rules {
@@ -25,12 +28,12 @@ impl Rules {
     pub fn monochrome_rush(level: u32) -> Self {
         // ponytail: levels 1-10 modelled as zero gravity (bot inputs outpace 50 ms/row); model the fall rate if tucks fail in-game.
         let gravity = if level > 10 { Gravity::TwentyG } else { Gravity::Zero };
-        Rules { gravity, spawn: (4, 18), preview: 5, hold: true }
+        Rules { gravity, spawn: (4, 18), preview: 5, hold: true, all_spin: false }
     }
 
     /// Stackfall versus: same board and spawn, low gravity the bot treats as zero.
     pub fn versus() -> Self {
-        Rules { gravity: Gravity::Zero, spawn: (4, 18), preview: 5, hold: true }
+        Rules { gravity: Gravity::Zero, spawn: (4, 18), preview: 5, hold: true, all_spin: false }
     }
 }
 

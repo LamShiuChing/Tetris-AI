@@ -393,16 +393,28 @@ export class Match extends Container {
       }
     }
 
+    // Engine `clear_kind`: TSS 1, TSD 2, TST 4, mini 8, PC 32, all-spin 0x100 | piece << 2 | lines;
+    // plain clears aren't tricks.
+    const kind = e.pc ? 32 : e.allSpin ? 0x100 | (e.piece << 2) | Math.min(e.lines, 3) : e.spin === 2 ? [0, 1, 2, 4, 4][e.lines] : e.spin === 1 ? 8 : 0;
+    const bot = this.bots[i];
+    if (bot && kind) bot.lastTrick = kind;
+
     const ex = this.extra[i];
     ex.maxCombo = Math.max(ex.maxCombo, e.combo);
     ex.tspins += e.spin === 2 ? 1 : 0;
     ex.quads += e.lines === 4 ? 1 : 0;
     ex.pcs += e.pc ? 1 : 0;
     const center = cells.reduce((a, c) => ({ x: a.x + c.x / 4, y: a.y + c.y / 4 }), { x: 0, y: 0 });
-    const big = e.lines >= 4 || e.spin === 2 || e.pc;
-    const name = e.spin === 2 ? `T-SPIN ${SPIN_NAMES[e.lines]}` : e.spin === 1 ? `MINI T-SPIN ${SPIN_NAMES[e.lines]}` : CLEAR_NAMES[e.lines];
+    const big = e.lines >= 4 || e.spin === 2 || e.pc || e.allSpin;
+    const name = e.spin === 2
+      ? `T-SPIN ${SPIN_NAMES[e.lines]}`
+      : e.spin === 1
+        ? `MINI T-SPIN ${SPIN_NAMES[e.lines]}`
+        : e.allSpin
+          ? `${'IJLOSTZ'[e.piece]}-SPIN ${SPIN_NAMES[e.lines] ?? CLEAR_NAMES[e.lines]}`
+          : CLEAR_NAMES[e.lines];
     const callouts: Text[] = [];
-    if (e.lines >= 2 || e.spin) callouts.push(this.fx.popup(v.fx, name, W / 2, H * 0.35, { size: big ? 40 : 30, color: e.spin ? 0xff8ce0 : e.lines >= 4 ? 0xffe066 : 0xffffff, maxWidth: W - 12 }));
+    if (e.lines >= 2 || e.spin || e.allSpin) callouts.push(this.fx.popup(v.fx, name, W / 2, H * 0.35, { size: big ? 40 : 30, color: e.spin || e.allSpin ? 0xff8ce0 : e.lines >= 4 ? 0xffe066 : 0xffffff, maxWidth: W - 12 }));
     if (e.b2b) callouts.push(this.fx.popup(v.fx, 'BACK-TO-BACK', W / 2, H * 0.35 - 44, { size: 20, color: 0x9ff7ff, delay: 80 }));
     if (e.combo >= 1) callouts.push(this.fx.popup(v.fx, `${e.combo} REN`, W / 2, H * 0.35 + 46, { size: 24 + Math.min(e.combo, 10) * 2, color: 0xffb347, delay: 60 }));
     if (callouts.length) {

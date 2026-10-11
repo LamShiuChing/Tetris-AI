@@ -75,6 +75,8 @@ export type GameEvent =
       rot: number;
       lines: number;
       spin: number;
+      /** A non-T piece spun into a spot it can't leave (a trick; scored like a plain clear). */
+      allSpin: boolean;
       combo: number;
       b2b: boolean;
       pc: boolean;
@@ -176,6 +178,7 @@ export class Player {
             y: ((d >> 12) & 63) - 4,
             lines: a,
             spin: b,
+            allSpin: ((d >> 18) & 1) !== 0,
             combo: c,
             b2b: (d & 1) !== 0,
             pc: (d & 2) !== 0,

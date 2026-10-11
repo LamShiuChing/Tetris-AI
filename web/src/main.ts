@@ -17,7 +17,7 @@ const WIDE = PARAMS.has('wide');
 const DESIGN = VIDEO ? (WIDE ? { w: 1600, h: 900 } : { w: 816, h: 1450 }) : { w: 1280, h: 720 };
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-/** One line per bot, in level order (12 = Chainlord, 14 = Perfectionist). */
+/** One line per bot, in level order (12 = Chainlord, 15 = Virtuoso). */
 const BLURBS = [
   'Brand new. Slow, never holds, makes lots of mistakes.',
   'Learning the basics. Still slow and messy.',
@@ -33,6 +33,7 @@ const BLURBS = [
   "Titan's power, keeps back-to-back chains alive.",
   "Titan's power, builds a 4-wide well and chains long combos.",
   "Titan's power, keeps the stack low and hunts perfect clears.",
+  "Titan's power, clears only with tricks, never the same one twice in a row.",
 ];
 
 const settings = loadSettings();

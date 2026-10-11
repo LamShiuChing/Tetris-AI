@@ -21,6 +21,8 @@ export interface PlanRequest {
   pending: number;
   /** Pieces left in the current bag after the queue. */
   bag: number;
+  /** Kind of this bot's last clearing trick (engine `trick` bit, 0 = none), for Virtuoso. */
+  lastTrick: number;
 }
 
 /** [piece, x, y, rot, spin, n, inputs...] or empty when every placement tops out. */
@@ -45,6 +47,6 @@ ctx.onmessage = async (e: MessageEvent<PlanRequest>) => {
 function plan(w: Awaited<typeof engine>, r: PlanRequest): number[] {
   new Uint16Array(w.memory.buffer, w.board_ptr(), 40).set(r.rows);
   new Uint8Array(w.memory.buffer, w.queue_ptr(), r.queue.length).set(r.queue);
-  const len = w.plan(r.current, r.hold < 0 ? 7 : r.hold, r.canHold ? 1 : 0, r.queue.length, r.b2b ? 1 : 0, r.combo, r.difficulty, r.salt, (r.twentyG ? 1 : 0) | (r.solo ? 2 : 0), r.pending, r.bag);
+  const len = w.plan(r.current, r.hold < 0 ? 7 : r.hold, r.canHold ? 1 : 0, r.queue.length, r.b2b ? 1 : 0, r.combo, r.difficulty, r.salt, (r.twentyG ? 1 : 0) | (r.solo ? 2 : 0) | (r.lastTrick << 2), r.pending, r.bag);
   return Array.from(new Int8Array(w.memory.buffer, w.out_ptr(), len));
 }

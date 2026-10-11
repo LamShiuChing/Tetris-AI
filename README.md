@@ -60,6 +60,7 @@ use `target-cpu=native` and fat LTO (see `.cargo/config.toml`, `Cargo.toml`).
 | **Chainlord** | Titan's strength, keeps back-to-back chains alive when it reasonably can |
 | **Renegade** | Titan's strength, combo specialist: builds a 4-wide well and chains single clears |
 | **Perfectionist** | Titan's strength, perfect-clear specialist: keeps the stack low and fillable |
+| **Virtuoso** | Titan's strength, clears only with tricks (T-spins, minis, perfect clears, S/Z/J/L/I all-spins), never the same trick twice in a row; in versus it may clear plainly once garbage pushes its stack past 10 rows |
 
 ## Measured results
 
@@ -93,6 +94,7 @@ speculation placements). At the shipped beam 256: ~110 ms natively, ~190 ms in t
 | `bash train/loop.sh <round>` | one self-play improvement round: play, retrain, test |
 | `cargo run --release --example vs_coldclear -- [matches] [ms] [level]` | Titan vs Cold Clear 2 over the Tetris Bot Protocol; writes replays to `web/public/replays/` |
 | `cargo run --release --example tune_vs` / `tune` | cross-entropy weight tuning (versus / MonochromeRush) |
+| `cargo run --release --example solo -- [level] [games] [pieces]` | a personality's solo play: each clear's kind, rule breaks, peak height |
 | `cargo run --release --example speed` | single-threaded think time (`WIDTHS=64,256`) |
 | `python web/render_video.py <replay> <out.mp4> [--wide [max s]]` | frame-exact MP4 of a replay: 9:16, or 16:9 with live search analysis (see the script for setup) |
 | `bench`, `openers`, `spins`, `netprobe`, `netcheck` | other measurements and checks |

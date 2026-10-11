@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 
 use crate::board::{Board, HEIGHT};
 use crate::game::{Bag, Rules, attack, points};
-use crate::movegen::{Spin, t_spin};
+use crate::movegen::{Spin, all_spin, t_spin};
 use crate::piece::Piece;
 
 /// Moves/rotations on the ground that refresh lock delay, per piece (reset by reaching a new lowest row).
@@ -30,7 +30,8 @@ pub enum Event {
     HardDrop { rows: u32 },
     /// `cleared` has bit y set for each row that was full before clearing.
     /// `attack` is what the clear was worth; `sent` is what's left after cancelling incoming garbage.
-    Lock { at: Active, lines: u32, spin: Spin, combo: i32, b2b: bool, perfect_clear: bool, attack: u32, sent: u32, cleared: u64 },
+    /// `all_spin`: a non-T piece spun into a spot it can't leave (a trick; scored like a plain clear).
+    Lock { at: Active, lines: u32, spin: Spin, all_spin: bool, combo: i32, b2b: bool, perfect_clear: bool, attack: u32, sent: u32, cleared: u64 },
     GarbageIn { lines: u32 },
     TopOut,
 }
@@ -291,6 +292,7 @@ impl Live {
     fn lock_piece(&mut self) {
         let Some(a) = self.active.take() else { return };
         let spin = if a.piece == Piece::T && self.rotated { t_spin(&self.board, a.x, a.y, a.rot) } else { Spin::None };
+        let all_spin = self.rotated && all_spin(&self.board, a.piece, a.x, a.y, a.rot);
         self.board.place(a.piece, a.x, a.y, a.rot);
         for (x, y) in a.piece.cells(a.x, a.y, a.rot) {
             if y >= 0 {
@@ -328,7 +330,7 @@ impl Live {
         self.pieces += 1;
         self.sent += out;
         let b2b = b2b_before && self.b2b && lines > 0;
-        self.events.push(Event::Lock { at: a, lines, spin, combo: self.combo, b2b, perfect_clear, attack: raw, sent: out, cleared });
+        self.events.push(Event::Lock { at: a, lines, spin, all_spin, combo: self.combo, b2b, perfect_clear, attack: raw, sent: out, cleared });
 
         if lines == 0 {
             let mut room = GARBAGE_PER_LOCK;

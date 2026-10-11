@@ -114,6 +114,11 @@ pub struct Config {
     pub recent_stages: Vec<u32>,
     pub recent_tricks: u32,
     pub specialty: Specialty,
+    /// Clears must be tricks (T-spins, minis, perfect clears), each a different kind from the one
+    /// before: a plain clear or a repeat costs `FOUL` (much less once the stack is in danger).
+    pub tricks_only: bool,
+    /// Kind (`trick` bit) of this bot's last clearing trick, for `tricks_only`; 0 = none yet.
+    pub last_trick: u32,
     /// Keep only the best of beam nodes that reached the same state by different move orders,
     /// so the beam holds `width` distinct futures. Off: it measured 42.2% +/- 6.2% vs not merging
     /// (level 10, 64 matches), i.e. no gain.
@@ -122,7 +127,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { width: 64, depth: 6, weights: Weights::default(), objective: Objective::Points, noise: 0.0, salt: 0, sees_garbage: true, speculate: false, use_net: false, net_weight: 20.0, dedupe: false, trick_margin: 0.0, trick_bonus: 0.0, recent_stages: vec![], recent_tricks: 0, specialty: Specialty::Normal }
+        Config { width: 64, depth: 6, weights: Weights::default(), objective: Objective::Points, noise: 0.0, salt: 0, sees_garbage: true, speculate: false, use_net: false, net_weight: 20.0, dedupe: false, trick_margin: 0.0, trick_bonus: 0.0, recent_stages: vec![], recent_tricks: 0, specialty: Specialty::Normal, tricks_only: false, last_trick: 0 }
     }
 }
 
@@ -134,6 +139,8 @@ pub const CHAINLORD: u32 = 12;
 pub const RENEGADE: u32 = 13;
 /// Titan's strength, perfect-clear specialist (`Specialty::PerfectClear`).
 pub const PERFECTIONIST: u32 = 14;
+/// Titan's strength, clears only with tricks and never the same trick twice in a row (`tricks_only`).
+pub const VIRTUOSO: u32 = 15;
 
 /// Trick bits recorded along a line of play.
 pub mod trick {
@@ -147,11 +154,15 @@ pub mod trick {
     pub const COMBO: u32 = 128;
     pub const SETUP_DONE: u32 = 256;
     pub const SETUP_FIRED: u32 = 512;
+    /// A clear by a non-T piece that spun into place (`Placement::all_spin`).
+    pub const ALLSPIN: u32 = 1024;
     /// How flashy each trick is, for the trick style.
-    pub const FLAIR: [(u32, f32); 10] = [
-        (TST, 6.0), (PC, 6.0), (SETUP_FIRED, 6.0), (SETUP_DONE, 4.0), (TSD, 3.0),
+    pub const FLAIR: [(u32, f32); 11] = [
+        (TST, 6.0), (PC, 6.0), (SETUP_FIRED, 6.0), (SETUP_DONE, 4.0), (TSD, 3.0), (ALLSPIN, 3.0),
         (QUAD, 2.0), (TSS, 2.0), (MINI, 1.0), (B2B, 1.0), (COMBO, 1.0),
     ];
+    /// `clear_kind` of an all-spin: this, plus piece << 2, plus lines.
+    pub const ALLSPIN_KIND: u32 = 0x100;
 }
 
 impl Config {
@@ -197,6 +208,8 @@ impl Config {
             recent_stages: vec![],
             recent_tricks: 0,
             specialty: Specialty::Normal,
+            tricks_only: false,
+            last_trick: 0,
         };
         // Named personalities at Titan's strength.
         match level {
@@ -212,6 +225,14 @@ impl Config {
             // Perfect clears: no T-spin shapes, wells or setups; height costs more. 56.2% vs Titan,
             // 2.2 perfect clears a match (Titan ~0.7).
             PERFECTIONIST => Config { specialty: Specialty::PerfectClear { bonus: 30.0, high: 3.0, region: 4.0 }, weights: Weights { tsd: 0.0, tst: 0.0, setup: 0.0, well: 0.0, b2b: 0.0, height: -0.3, ..cfg.weights }, ..cfg },
+            // Tricks only, never the same twice in a row: no quad wells, T-spin shapes and named
+            // setups worth more, flashy lines kept in the beam.
+            VIRTUOSO => Config {
+                tricks_only: true,
+                trick_bonus: 10.0,
+                weights: Weights { well: 0.0, tsd: cfg.weights.tsd * 1.5, tst: cfg.weights.tst * 1.5, setup: cfg.weights.setup * 3.0, ..cfg.weights },
+                ..cfg
+            },
             _ => cfg,
         }
     }
@@ -256,6 +277,8 @@ struct Node {
     /// before, to read back the chosen line.
     mv: (Piece, i8, i8, u8),
     parent: u32,
+    /// Kind of the last clearing trick along this line (`tricks_only`).
+    last_trick: u32,
 }
 
 /// The line the bot chose: the setup it's working on (if any) and the tricks it plans.
@@ -296,6 +319,7 @@ pub fn suggest(root: &Root, rules: &Rules, cfg: &Config) -> Option<Placement> {
 
 /// `suggest`, plus what the chosen line is going for.
 pub fn suggest_with_plan(root: &Root, rules: &Rules, cfg: &Config) -> Option<(Placement, Plan)> {
+    let rules = &Rules { all_spin: rules.all_spin || cfg.tricks_only, ..*rules };
     let seq: Vec<Piece> = std::iter::once(root.current).chain(root.queue.iter().copied()).collect();
     let mut first_moves = vec![];
     let mut layer = vec![Node {
@@ -313,6 +337,7 @@ pub fn suggest_with_plan(root: &Root, rules: &Rules, cfg: &Config) -> Option<(Pl
         first: 0,
         mv: (root.current, 0, 0, 0),
         parent: 0,
+        last_trick: cfg.last_trick,
     }];
     if tracks_setups(cfg) {
         let (p, stage) = setups::best_stage(&root.board, available(&seq, 0, root.hold));
@@ -491,6 +516,9 @@ fn play(node: &Node, p: &Placement, hold: Option<Piece>, next: usize, seq: &[Pie
         if board.is_empty() {
             tricks |= trick::PC;
         }
+        if p.all_spin {
+            tricks |= trick::ALLSPIN;
+        }
         if node.b2b && b2b {
             tricks |= trick::B2B;
         }
@@ -519,6 +547,19 @@ fn play(node: &Node, p: &Placement, hold: Option<Piece>, next: usize, seq: &[Pie
         Specialty::PerfectClear { bonus, .. } if lines > 0 && board.is_empty() => gain += bonus,
         Specialty::PerfectClear { .. } => {}
     }
+    let mut last_trick = node.last_trick;
+    if cfg.tricks_only && lines > 0 {
+        let kind = clear_kind(lines, p.spin, board.is_empty(), p.all_spin.then_some(p.piece));
+        if kind == 0 || kind == node.last_trick {
+            // Strict in solo play. In versus, once garbage has the stack in danger, it may dig out plainly.
+            let height = HEIGHT as usize - node.board.rows.iter().position(|&r| r != 0).unwrap_or(HEIGHT as usize);
+            let lenient = cfg.objective == Objective::Attack && height > FOUL_SAFE_HEIGHT;
+            gain -= if lenient { FOUL_IN_DANGER } else { FOUL };
+        }
+        if kind != 0 {
+            last_trick = kind;
+        }
+    }
     let reward = node.reward + gain;
     let slot = tslot(&board);
     let mut leaf = eval_with_slot(&board, b2b, &cfg.weights, slot) + cfg.weights.incoming * pending as f32;
@@ -535,7 +576,7 @@ fn play(node: &Node, p: &Placement, hold: Option<Piece>, next: usize, seq: &[Pie
     if cfg.noise > 0.0 {
         value += cfg.noise * jitter(&board, cfg.salt);
     }
-    Some(Node { board, hold, next, b2b, combo, pending, reward, value, progress, stage, tricks, first: node.first, mv: (p.piece, p.x, p.y, p.rot), parent: 0 })
+    Some(Node { board, hold, next, b2b, combo, pending, reward, value, progress, stage, tricks, first: node.first, mv: (p.piece, p.x, p.y, p.rot), parent: 0, last_trick })
 }
 
 /// Identifies a search state regardless of how it was reached (FNV-1a over everything that
@@ -641,6 +682,36 @@ fn eval_with_slot(board: &Board, b2b: bool, w: &Weights, slot: Option<(i8, i8, u
         + w.well * well_depth as f32
         + spin
         + w.b2b * b2b as u8 as f32
+}
+
+/// What a plain clear or a repeated trick costs a `tricks_only` bot: about a death's worth, except
+/// in versus with the stack above `FOUL_SAFE_HEIGHT` rows, where it's small so the bot can dig out
+/// of garbage. (Strict everywhere, it lost 16 of 16 to Titan in ~37 pieces; strict to 14 rows,
+/// 16 of 16 in ~57. At 10 rows: 3 of 16, ~190 pieces, 8 of 16 vs level 8.)
+const FOUL: f32 = 500.0;
+const FOUL_SAFE_HEIGHT: usize = 10;
+const FOUL_IN_DANGER: f32 = 2.0;
+
+/// The trick kind of a clear, or 0 for a plain single/double/triple/quad: a `trick` bit for T-spins,
+/// minis and perfect clears; for an all-spin (`all_spin` = the piece) one kind per piece and lines,
+/// so an S-spin double and a Z-spin double are different tricks.
+pub fn clear_kind(lines: u32, spin: Spin, perfect_clear: bool, all_spin: Option<Piece>) -> u32 {
+    if lines == 0 {
+        return 0;
+    }
+    if perfect_clear {
+        return trick::PC;
+    }
+    if let Some(piece) = all_spin {
+        return trick::ALLSPIN_KIND | (piece as u32) << 2 | lines.min(3);
+    }
+    match (spin, lines) {
+        (Spin::Full, 1) => trick::TSS,
+        (Spin::Full, 2) => trick::TSD,
+        (Spin::Full, _) => trick::TST,
+        (Spin::Mini, _) => trick::MINI,
+        _ => 0,
+    }
 }
 
 /// Ren well depth counted at most this deep.
