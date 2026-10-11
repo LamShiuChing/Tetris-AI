@@ -1,7 +1,7 @@
 //! Bot-vs-bot win rate on the headless versus engine (real garbage, equal speed). Each seed is
 //! played twice with seats swapped. `cargo run --release --example vs [seeds] [variant] [beam width]`.
 
-use tetris_ai::bot::{Config, Objective, Weights};
+use tetris_ai::bot::{CHAINLORD, Config, Objective, TRICKSTER, Weights};
 use tetris_ai::versus::play_match;
 
 const MAX_PIECES: u32 = 400;
@@ -13,12 +13,32 @@ fn configs(variant: &str, width: usize) -> [(&'static str, Config); 2] {
         "speculate" => [("speculating", base.clone()), ("not speculating", Config { speculate: false, ..base })],
         "setups" => [("setup steering", base.clone()), ("no setups", Config { weights: Weights { setup: 0.0, ..base.weights.clone() }, ..base })],
         "net" => [("value net", Config { use_net: true, net_weight: net_weight(), ..base.clone() }), ("hand-weighted eval", base)],
+        "trickster" => [("Trickster", tuned(Config::difficulty(TRICKSTER, Objective::Attack))), ("Titan", base)],
+        "chainlord" => [("Chainlord", tuned(Config::difficulty(CHAINLORD, Objective::Attack))), ("Titan", base)],
         "dedupe" => [("merging duplicate states", base.clone()), ("no merging", Config { dedupe: false, ..base })],
         "width128" => [("beam 128", Config { width: 128, ..base.clone() }), ("beam 64", base)],
         "b2b" => [("B2B policy", base.clone()), ("no B2B policy", Config { weights: Weights { b2b_break: 0.0, ..base.weights.clone() }, ..base })],
         "tuned" => [("tuned versus weights", base.clone()), ("hand-picked", Config { weights: hand(), ..base })],
-        _ => panic!("variant: garbage | speculate | setups | dedupe | width128 | b2b | net | tuned"),
+        _ => panic!("variant: trickster | chainlord | garbage | speculate | setups | dedupe | width128 | b2b | net | tuned"),
     }
+}
+
+/// Env overrides for sweeping a personality: TRICK_MARGIN, TRICK_BONUS, B2B_BREAK, B2B_HOLD (multiplies b2b).
+fn tuned(mut c: Config) -> Config {
+    let env = |k: &str| std::env::var(k).ok().map(|v| v.parse::<f32>().unwrap());
+    if let Some(m) = env("TRICK_MARGIN") {
+        c.trick_margin = m;
+    }
+    if let Some(b) = env("TRICK_BONUS") {
+        c.trick_bonus = b;
+    }
+    if let Some(b) = env("B2B_BREAK") {
+        c.weights.b2b_break = b;
+    }
+    if let Some(h) = env("B2B_HOLD") {
+        c.weights.b2b = Config::difficulty(10, Objective::Attack).weights.b2b * h;
+    }
+    c
 }
 
 /// `SEED0` env var, default 50000: change it for confirmation runs on seeds never used to pick a candidate.
@@ -54,6 +74,7 @@ fn main() {
                         let mut r = play_match([b, a], seed, MAX_PIECES);
                         r.winner = r.winner.map(|w| 1 - w);
                         r.sent.swap(0, 1);
+                        r.style.swap(0, 1);
                         r
                     }
                 })
@@ -69,4 +90,17 @@ fn main() {
     let pieces = results.iter().map(|r| r.pieces as f64).sum::<f64>() / n;
     let sent = |i: usize| results.iter().map(|r| r.sent[i] as f64).sum::<f64>() / n;
     println!("{a_name} vs {b_name}: {:.1}% ± {:.1}% over {matches} matches  (avg {pieces:.0} pieces, sent {:.1} vs {:.1})", p * 100.0, stderr * 100.0, sent(0), sent(1));
+    for (i, name) in [a_name, b_name].into_iter().enumerate() {
+        let avg = |f: fn(&tetris_ai::versus::Style) -> u32| results.iter().map(|r| f(&r.style[i]) as f64).sum::<f64>() / n;
+        println!(
+            "  {name:>10}: per match TSD {:.1}  TST {:.2}  PC {:.2}  setup fires {:.2} ({:.2} distinct)  B2B clears {:.1} / breaks {:.1}",
+            avg(|s| s.tsd),
+            avg(|s| s.tst),
+            avg(|s| s.pc),
+            avg(|s| s.setup_fires),
+            avg(|s| s.setups),
+            avg(|s| s.b2b_clears),
+            avg(|s| s.b2b_breaks),
+        );
+    }
 }

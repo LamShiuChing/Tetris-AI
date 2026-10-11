@@ -16,6 +16,8 @@ export interface Exports {
   live_events(slot: number): number;
   events_ptr(): number;
   piece_cells(piece: number, rot: number): number;
+  setup_name(id: number): number;
+  name_ptr(): number;
   board_ptr(): number;
   queue_ptr(): number;
   out_ptr(): number;
@@ -82,6 +84,12 @@ export type GameEvent =
     }
   | { kind: 'garbage'; lines: number }
   | { kind: 'topout' };
+
+/** Display name of a setup id the bot reported, e.g. "TKI 3 Opening". */
+export function setupName(w: Exports, id: number): string {
+  const n = w.setup_name(id);
+  return new TextDecoder().decode(new Uint8Array(w.memory.buffer, w.name_ptr(), n));
+}
 
 /** Cell offsets [dx, dy] of a piece at a rotation, straight from the engine's shape table. */
 export function pieceCells(w: Exports, piece: number, rot: number): [number, number][] {

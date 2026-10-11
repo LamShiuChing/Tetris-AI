@@ -4,7 +4,7 @@ import { LEVELS, Planner } from './bot';
 import { loadEngine } from './engine';
 import { Fx } from './fx';
 import { Controls, DEFAULT_HANDLING } from './input';
-import { Match, type MatchConfig, type Mode } from './match';
+import { Match, type MatchConfig, type Mode, type Replay } from './match';
 import { makeTextures } from './view';
 
 /** Everything is laid out on a 1280x720 stage, scaled to fit the window. */
@@ -95,8 +95,8 @@ async function main() {
   };
   const levelName = (v: number) => LEVELS[v - 1].name;
   bindRange('vsLevel', levelName, () => {}, Number(localStorage.getItem('stackfall.vs') ?? 4));
-  bindRange('wLeft', levelName, () => {}, 8);
-  bindRange('wRight', levelName, () => {}, 10);
+  bindRange('wLeft', levelName, () => {}, 10);
+  bindRange('wRight', levelName, () => {}, 11);
   bindRange('soloWho', (v) => (v === 0 ? 'You' : `Bot · ${levelName(v)}`), () => {}, 0);
   bindRange('speed', (v) => `${v}x`, () => {}, 1);
   bindRange('das', (v) => `${v} ms`, (v) => (settings.handling.das = v), settings.handling.das);
@@ -129,6 +129,24 @@ async function main() {
       showPlan: $<HTMLInputElement>('plan').checked,
       speed: num('speed'),
     });
+  // Recorded matches (e.g. Titan vs Cold Clear 2, written by examples/vs_coldclear.rs).
+  fetch('/replays/index.json')
+    .then((r) => (r.ok ? r.json() : []))
+    .then((list: { file: string; names: [string, string]; winner: string | null; pieces: number }[]) => {
+      if (!list.length) return;
+      const box = $('replayList');
+      box.textContent = '';
+      for (const r of list) {
+        const b = document.createElement('button');
+        b.textContent = `${r.names[0]} vs ${r.names[1]} — ${r.winner ?? 'draw'} wins (${r.pieces} pieces)`;
+        b.onclick = async () => {
+          const replay: Replay = await (await fetch(`/replays/${r.file}`)).json();
+          start({ mode: 'replay', sides: [{ kind: 'replay' }, { kind: 'replay' }], showPlan: false, speed: num('speed'), replay });
+        };
+        box.appendChild(b);
+      }
+    })
+    .catch(() => {});
   $('again').onclick = () => last && start(last);
   $('toMenu').onclick = toMenu;
   document.querySelectorAll('button').forEach((b) => b.addEventListener('pointerdown', () => (audio.unlock(), audio.click())));

@@ -20,7 +20,7 @@
       <div class="cards">
         <section class="card">
           <button id="vs" class="big">VS BOT</button>
-          <label>Opponent <input type="range" id="vsLevel" min="1" max="10" value="4" /> <b id="vsLevelName"></b></label>
+          <label>Opponent <input type="range" id="vsLevel" min="1" max="12" value="4" /> <b id="vsLevelName"></b></label>
         </section>
         <section class="card">
           <button id="solo" class="big pink">SOLO</button>
@@ -29,10 +29,14 @@
         </section>
         <section class="card">
           <button id="watch" class="big alt">WATCH BOTS</button>
-          <label>Left <input type="range" id="wLeft" min="1" max="10" value="8" /> <b id="wLeftName"></b></label>
-          <label>Right <input type="range" id="wRight" min="1" max="10" value="10" /> <b id="wRightName"></b></label>
+          <label>Left <input type="range" id="wLeft" min="1" max="12" value="10" /> <b id="wLeftName"></b></label>
+          <label>Right <input type="range" id="wRight" min="1" max="12" value="11" /> <b id="wRightName"></b></label>
           <label>Speed <input type="range" id="speed" min="0.25" max="3" step="0.25" value="1" /> <b id="speedName"></b></label>
           <label class="check"><input type="checkbox" id="plan" checked /> Show where each bot plans to drop</label>
+        </section>
+        <section class="card">
+          <h3>Replays</h3>
+          <div id="replayList" class="replays">No replays yet.</div>
         </section>
         <section class="card">
           <h3>Handling</h3>

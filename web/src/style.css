@@ -183,3 +183,25 @@ button.big:active {
   display: flex;
   gap: 16px;
 }
+
+.replays {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.replays button {
+  font: inherit;
+  font-size: 15px;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  background: #241a55;
+  color: #fff;
+  cursor: pointer;
+}
+.replays button:hover {
+  border-color: var(--lemon);
+}

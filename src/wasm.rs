@@ -8,7 +8,8 @@
 //! reading state from `live_snapshot` and effects from `live_events` + `events_ptr()`.
 
 use crate::board::{Board, HEIGHT};
-use crate::bot::{self, Config, Objective, Root};
+use crate::bot::{self, Config, Objective, Root, suggest_with_plan};
+use crate::setups;
 use crate::game::{Gravity, Rules};
 use crate::live::{Event, Live};
 use crate::movegen::Placement;
@@ -21,6 +22,7 @@ static mut GAMES: Vec<Live> = Vec::new();
 static mut SNAP: [i32; 64] = [0; 64];
 static mut COLORS: [u8; 400] = [0; 400];
 static mut CELLS: [i8; 8] = [0; 8];
+static mut NAME: [u8; 128] = [0; 128];
 const EVENT_INTS: usize = 8;
 const MAX_EVENTS: usize = 64;
 static mut EVENTS: [i32; EVENT_INTS * MAX_EVENTS] = [0; EVENT_INTS * MAX_EVENTS];
@@ -65,7 +67,13 @@ pub extern "C" fn plan(current: u32, hold: u32, can_hold: u32, queue_len: u32, b
     let objective = if flags & 2 != 0 { Objective::Points } else { Objective::Attack };
     let cfg = Config { salt: salt as u64, ..Config::difficulty(difficulty, objective) };
     let gravity = if flags & 1 != 0 { Gravity::TwentyG } else { Gravity::Zero };
-    write_out(bot::suggest(&root, &Rules { gravity, ..Rules::versus() }, &cfg))
+    let Some((p, plan)) = suggest_with_plan(&root, &Rules { gravity, ..Rules::versus() }, &cfg) else { return 0 };
+    // After the inputs: the setup the chosen line works on (0xFFFF = none) and its trick bits.
+    let len = write_out(Some(p)) as usize;
+    let out = unsafe { &mut *(&raw mut OUT) };
+    let stage = plan.stage.map_or(0xFFFF, |s| s.min(0xFFFE)) as u16;
+    out[len..len + 4].copy_from_slice(&[stage as u8, (stage >> 8) as u8, plan.tricks as u8, (plan.tricks >> 8) as u8]);
+    len as u32 + 4
 }
 
 fn read_queue(len: u32) -> Vec<Piece> {
@@ -205,6 +213,21 @@ pub extern "C" fn piece_cells(piece: u32, rot: u32) -> *const i8 {
         out[2 * i + 1] = y;
     }
     out.as_ptr()
+}
+
+/// Writes setup `id`'s display name (UTF-8) to `name_ptr()` and returns its length.
+#[unsafe(no_mangle)]
+pub extern "C" fn setup_name(id: u32) -> u32 {
+    let name = setups::setup_name(id).as_bytes();
+    let out = unsafe { &mut *(&raw mut NAME) };
+    let n = name.len().min(out.len());
+    out[..n].copy_from_slice(&name[..n]);
+    n as u32
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn name_ptr() -> *const u8 {
+    &raw const NAME as *const u8
 }
 
 /// Cell colors, 40 rows x 10 bytes: 0 empty, 1..=7 piece (index into I J L O S T Z, +1), 8 garbage.

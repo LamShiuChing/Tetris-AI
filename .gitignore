@@ -6,3 +6,4 @@ tune.log
 /data
 tune_vs.log
 nets/gen*
+/external

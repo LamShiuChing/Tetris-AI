@@ -12,3 +12,6 @@ crate-type = ["cdylib", "rlib"]
 # Whole-program optimization: slower builds, faster bots (tuning and self-play run for hours).
 lto = "fat"
 codegen-units = 1
+
+[dev-dependencies]
+serde_json = "1.0.152"

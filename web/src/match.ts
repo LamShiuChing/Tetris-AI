@@ -3,13 +3,22 @@
 import { Container, Text } from 'pixi.js';
 import { audio } from './audio';
 import { Bot, LEVELS, type Physics, type Planner } from './bot';
-import { Player, pieceCells, type Exports, type GameEvent, type Snapshot } from './engine';
+import { Action, Player, pieceCells, setupName, type Exports, type GameEvent, type Snapshot } from './engine';
 import { FONT, type Fx } from './fx';
 import type { Controls } from './input';
 import { BoardView, CELL, COLORS, GARBAGE, H, W, type Textures } from './view';
 
-export type Side = { kind: 'human' } | { kind: 'bot'; level: number };
-export type Mode = 'versus' | 'marathon' | 'master';
+export type Side = { kind: 'human' } | { kind: 'bot'; level: number } | { kind: 'replay' };
+export type Mode = 'versus' | 'marathon' | 'master' | 'replay';
+
+/** A recorded match (examples/vs_coldclear.rs): seed + each turn's moves for both sides. */
+export interface Replay {
+  seed: number;
+  names: [string, string];
+  winner: string | null;
+  /** Per turn, per side: hold first?, and inputs (L/R move, C/W rotate, D drop to floor). */
+  turns: ({ h: boolean; i: string } | null)[][];
+}
 
 export interface MatchConfig {
   mode: Mode;
@@ -19,6 +28,7 @@ export interface MatchConfig {
   showPlan: boolean;
   /** Time scale, for watching bots faster or slower. */
   speed: number;
+  replay?: Replay;
 }
 
 interface ModeRules {
@@ -36,7 +46,12 @@ export const MODES: Record<Mode, ModeRules> = {
   marathon: { title: 'MARATHON', goal: 150, gravityMs: (lv) => Math.max(16, 1000 * 0.8 ** (lv - 1)), lockDelayMs: () => 500 },
   // 20G from the first piece; lock delay tightens from 500 ms to 200 ms by level 30.
   master: { title: 'MASTER', goal: 300, gravityMs: () => 0, lockDelayMs: (lv) => Math.max(200, 500 - (lv - 1) * 10.5) },
+  // Recorded matches were played without gravity: pieces move only by the recorded inputs.
+  replay: { title: 'REPLAY', goal: 0, gravityMs: () => 1e9, lockDelayMs: () => 500 },
 };
+
+/** Replay pacing: ms between a recorded input and the next. */
+const REPLAY_STEP_MS = 45;
 
 const BOARD_Y = 96;
 const COUNTDOWN = 3000;
@@ -63,6 +78,11 @@ export class Match extends Container {
   private state: 'countdown' | 'playing' | 'over' = 'countdown';
   private t = 0;
   private heartbeat = 0;
+  /** Replay playback: next turn, each side's pending actions, and attack to deliver at turn end. */
+  private replayTurn = 0;
+  private replayActions: (() => void)[][] = [[], []];
+  private replayWait = 0;
+  private turnAttack = [0, 0];
   /** Per board, the callouts for the latest clear; a new clear hides them so they never pile up. */
   private callouts: Text[][] = [[], []];
 
@@ -77,7 +97,7 @@ export class Match extends Container {
     super();
     this.rules = MODES[cfg.mode];
     const solo = cfg.sides.length === 1;
-    const seed = (Math.random() * 2 ** 31) | 0;
+    const seed = cfg.replay?.seed ?? (Math.random() * 2 ** 31) | 0;
     this.players = cfg.sides.map((_, slot) => {
       const p = new Player(engine, slot);
       p.start(seed, this.rules.gravityMs(1, 0), this.rules.lockDelayMs(1)); // same seed: same pieces for everyone
@@ -85,7 +105,14 @@ export class Match extends Container {
     });
     const xs = solo ? [500] : [200, 800];
     this.views = cfg.sides.map((side, i) => {
-      const name = side.kind === 'human' ? 'YOU' : `${LEVELS[side.level - 1].name.toUpperCase()} · LV ${side.level}`;
+      const name =
+        side.kind === 'human'
+          ? 'YOU'
+          : side.kind === 'replay'
+            ? cfg.replay!.names[i].toUpperCase()
+            : side.level > 10
+              ? LEVELS[side.level - 1].name.toUpperCase() // named personality
+              : `${LEVELS[side.level - 1].name.toUpperCase()} · LV ${side.level}`;
       const v = new BoardView(engine, tex, name, i === 0 ? 0x5fd3ff : 0xff5fa2);
       v.position.set(xs[i], BOARD_Y);
       this.addChild(v);
@@ -149,9 +176,10 @@ export class Match extends Container {
       p.setPhysics(phys.gravityMs, phys.lockDelayMs, level);
       const bot = this.bots[i];
       if (bot) bot.update(dt, this.snaps[i], phys);
-      else this.controls.update(realDtMs, p, (k, ok) => ok && this.inputSound(k, i));
+      else if (!this.cfg.replay) this.controls.update(realDtMs, p, (k, ok) => ok && this.inputSound(k, i));
       p.tick(dt);
     }
+    if (this.cfg.replay) this.playReplay(dt);
     for (let i = 0; i < this.players.length; i++) {
       const before = this.snaps[i];
       this.snaps[i] = this.players[i].snapshot();
@@ -161,6 +189,8 @@ export class Match extends Container {
         audio.levelUp();
       }
       this.views[i].render(this.snaps[i], this.cfg.showPlan ? (this.bots[i]?.target ?? null) : null, this.statsText(i));
+      const goal = this.bots[i]?.goal ?? null;
+      this.views[i].setGoal(goal === null ? '' : `→ ${setupName(this.engine, goal)}`);
     }
 
     const humanIdx = this.cfg.sides.findIndex((s) => s.kind === 'human');
@@ -178,7 +208,10 @@ export class Match extends Container {
       else if (s.lines >= this.rules.goal) this.finish(0);
     } else {
       const dead = this.snaps.map((s) => s.over);
-      if (dead.some(Boolean)) this.finish(dead[0] && dead[1] ? -1 : dead[0] ? 1 : 0);
+      if (dead.some(Boolean)) {
+        if (this.cfg.replay) console.info(`replay: K.O. on turn ${this.replayTurn} of ${this.cfg.replay.turns.length}`);
+        this.finish(dead[0] && dead[1] ? -1 : dead[0] ? 1 : 0);
+      }
     }
   }
 
@@ -294,11 +327,53 @@ export class Match extends Container {
       const target = this.views[j];
       const to = this.toLocal(target.inner.toGlobal({ x: -13, y: H - 20 }));
       this.fx.popup(v.fx, `+${e.sent}`, center.x, center.y - 30, { size: 26, color: 0xff6b8b, hold: 300 });
+      // Replays deliver garbage at the end of the turn, exactly as the recorded match did.
+      if (this.cfg.replay) this.turnAttack[i] += e.sent;
       this.fx.orb(this.top, from, to, i === 0 ? 0x5fd3ff : 0xff5fa2, e.sent, () => {
         if (this.state !== 'playing') return;
-        this.players[j].garbage(e.sent);
+        if (!this.cfg.replay) this.players[j].garbage(e.sent);
         target.shake(3);
       });
+    }
+  }
+
+  /** Lockstep playback: both sides play turn t's recorded inputs, then each receives what the other
+   * sent, then turn t+1 — the same order the referee used, so the engine reproduces the match. */
+  private playReplay(dt: number) {
+    const replay = this.cfg.replay!;
+    this.replayWait -= dt;
+    while (this.replayWait <= 0 && this.state === 'playing') {
+      if (this.replayActions.every((q) => q.length === 0)) {
+        if (this.replayTurn > 0) {
+          this.players[1].garbage(this.turnAttack[0]);
+          this.players[0].garbage(this.turnAttack[1]);
+          this.turnAttack = [0, 0];
+        }
+        const turn = replay.turns[this.replayTurn++];
+        if (!turn) {
+          // The recorded match ended in a K.O. before this, so getting here means the engine
+          // didn't reproduce it (or the match went the distance); fall back to the recorded winner.
+          console.warn(`replay: no K.O. after all ${replay.turns.length} turns; using the recorded winner`);
+          const w = replay.names.findIndex((n) => n === replay.winner);
+          this.finish(w);
+          return;
+        }
+        turn.forEach((mv, i) => {
+          if (!mv) return;
+          const p = this.players[i];
+          const q: (() => void)[] = mv.h ? [() => p.input(Action.Hold)] : [];
+          for (const c of mv.i) {
+            if (c === 'D') q.push(() => {
+              while (p.input(Action.Soft)) {}
+            });
+            else q.push(() => p.input({ L: Action.Left, R: Action.Right, C: Action.Cw, W: Action.Ccw }[c as 'L' | 'R' | 'C' | 'W']));
+          }
+          q.push(() => p.input(Action.Hard));
+          this.replayActions[i] = q;
+        });
+      }
+      for (const q of this.replayActions) q.shift()?.();
+      this.replayWait += REPLAY_STEP_MS;
     }
   }
 
@@ -316,7 +391,9 @@ export class Match extends Container {
       title = winner === 0 ? 'COMPLETE!' : 'GAME OVER';
       detail = `${this.rules.title} · ${s.score.toLocaleString()} pts · ${Math.min(s.lines, this.rules.goal)} lines · ${time}`;
     } else {
-      title = winner < 0 ? 'DRAW' : humanIdx < 0 ? (winner === 0 ? 'LEFT BOT WINS' : 'RIGHT BOT WINS') : winner === humanIdx ? 'YOU WIN!' : 'YOU LOSE';
+      const names = this.cfg.replay?.names;
+      title =
+        winner < 0 ? 'DRAW' : names ? `${names[winner].toUpperCase()} WINS` : humanIdx < 0 ? (winner === 0 ? 'LEFT BOT WINS' : 'RIGHT BOT WINS') : winner === humanIdx ? 'YOU WIN!' : 'YOU LOSE';
       detail = time;
     }
     this.banner.text = solo ? title : winner < 0 ? 'DRAW' : humanIdx >= 0 && winner !== humanIdx ? 'K.O.' : 'WIN!';

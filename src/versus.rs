@@ -2,10 +2,10 @@
 //! one piece each per turn (equal speed). Attacks from a turn land after both have moved, so
 //! neither side gets a first-mover edge. For tuning and benchmarking on win rate.
 
-use crate::bot::{Config, Root, suggest};
+use crate::bot::{Config, Root, suggest_with_plan, trick};
 use crate::game::Rules;
 use crate::live::{Event, Live};
-use crate::movegen::Input;
+use crate::movegen::{Input, Placement, Spin};
 
 #[derive(Debug, Clone, Copy)]
 pub struct MatchResult {
@@ -13,17 +13,81 @@ pub struct MatchResult {
     pub winner: Option<usize>,
     pub pieces: u32,
     pub sent: [u32; 2],
+    pub style: [Style; 2],
 }
 
-/// What one player's turn produced, for self-play data (`play_match_observed`).
+/// What each side actually did, for comparing personalities.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Style {
+    /// Distinct trick kinds performed (`trick` bits OR'd).
+    pub tricks: u32,
+    /// Distinct named setups whose T-spin it fired.
+    pub setups: u32,
+    pub b2b_clears: u32,
+    pub b2b_breaks: u32,
+    /// How many of the rarer, flashier clears it made.
+    pub tsd: u32,
+    pub tst: u32,
+    pub pc: u32,
+    /// T-spins that fired a named setup (repeats included).
+    pub setup_fires: u32,
+}
+
+/// Per-side memory the trick style uses to avoid repeating itself.
+#[derive(Default)]
+struct Memory {
+    recent_tricks: std::collections::VecDeque<u32>,
+    recent_stages: std::collections::VecDeque<u32>,
+    fired: Vec<u32>,
+}
+
+/// Anything that can choose moves in a versus match: our bot, or an external one (Cold Clear over
+/// the Tetris Bot Protocol, see examples/vs_coldclear.rs).
+pub trait Brain {
+    /// A placement for the active piece or its hold swap (with the inputs that reach it), and the
+    /// named setup it is working on, if any. None = no legal move (the game hard drops).
+    fn choose(&mut self, g: &Live, recent_tricks: u32, recent_stages: &[u32]) -> Option<(Placement, Option<u32>)>;
+}
+
+/// Our bot as a `Brain`.
+pub struct BotBrain(pub Config);
+
+impl Brain for BotBrain {
+    fn choose(&mut self, g: &Live, recent_tricks: u32, recent_stages: &[u32]) -> Option<(Placement, Option<u32>)> {
+        let active = g.active?;
+        let queue: Vec<_> = g.queue.iter().copied().collect();
+        let root = Root {
+            board: g.board,
+            current: active.piece,
+            hold: g.hold,
+            can_hold: g.can_hold,
+            queue: &queue,
+            b2b: g.b2b,
+            combo: g.combo,
+            pending: g.pending_lines(),
+            bag: g.bag_mask(),
+        };
+        let mut cfg = self.0.clone();
+        cfg.recent_tricks = recent_tricks;
+        cfg.recent_stages = recent_stages.to_vec();
+        suggest_with_plan(&root, &Rules::versus(), &cfg).map(|(p, plan)| (p, plan.stage))
+    }
+}
+
+/// What one player's turn produced, for self-play data and replays.
 pub struct Turn<'a> {
     pub player: usize,
     /// The player's game right after the placement (and any garbage that rose).
     pub game: &'a Live,
     /// What the placement's clear was worth, before cancelling.
     pub attack: u32,
+    /// What was left to send after cancelling (delivered to the opponent after both moved).
+    pub sent: u32,
     /// Garbage rows that rose onto this player's board this turn.
     pub risen: u32,
+    /// The move played (None if there was none), and whether it held first.
+    pub placement: Option<&'a Placement>,
+    pub held: bool,
 }
 
 /// Plays until one side tops out, or `max_pieces` each (then whoever sent more wins).
@@ -33,29 +97,32 @@ pub fn play_match(cfgs: [&Config; 2], seed: u64, max_pieces: u32) -> MatchResult
 
 /// `play_match`, calling `observe` after every placement.
 pub fn play_match_observed(cfgs: [&Config; 2], seed: u64, max_pieces: u32, observe: &mut dyn FnMut(Turn)) -> MatchResult {
-    // No gravity: bots place every piece with explicit inputs and a hard drop.
+    let mut a = BotBrain(cfgs[0].clone());
+    let mut b = BotBrain(cfgs[1].clone());
+    play_brains([&mut a, &mut b], seed, max_pieces, observe)
+}
+
+/// The match loop for any two brains.
+pub fn play_brains(brains: [&mut dyn Brain; 2], seed: u64, max_pieces: u32, observe: &mut dyn FnMut(Turn)) -> MatchResult {
+    // No gravity: bots place every piece with explicit inputs and a hard drop. Seeds match the
+    // browser's `live_new`, so a recorded match replays identically there.
     let mut games = [0u64, 1].map(|slot| Live::new(seed, seed ^ (slot + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15), 1e9, 500.0));
-    let rules = Rules::versus();
+    let mut memory = [Memory::default(), Memory::default()];
+    let mut style = [Style::default(); 2];
     for piece in 0..max_pieces {
         let mut attacks = [0; 2];
         for i in 0..2 {
             let g = &mut games[i];
             let Some(active) = g.active else { continue };
-            let queue: Vec<_> = g.queue.iter().copied().collect();
-            let root = Root {
-                board: g.board,
-                current: active.piece,
-                hold: g.hold,
-                can_hold: g.can_hold,
-                queue: &queue,
-                b2b: g.b2b,
-                combo: g.combo,
-                pending: g.pending_lines(),
-                bag: g.bag_mask(),
-            };
-            match suggest(&root, &rules, cfgs[i]) {
-                Some(p) => {
-                    if p.piece != active.piece {
+            let recent_tricks = memory[i].recent_tricks.iter().fold(0, |m, &t| m | t);
+            let recent_stages: Vec<u32> = memory[i].recent_stages.iter().copied().collect();
+            let b2b_before = g.b2b;
+            let chosen = brains[i].choose(g, recent_tricks, &recent_stages);
+            let planned_stage = chosen.as_ref().and_then(|c| c.1);
+            let held = chosen.as_ref().is_some_and(|(p, _)| p.piece != active.piece);
+            match &chosen {
+                Some((p, _)) => {
+                    if held {
                         g.hold();
                     }
                     for input in &p.inputs {
@@ -67,7 +134,7 @@ pub fn play_match_observed(cfgs: [&Config; 2], seed: u64, max_pieces: u32, obser
                             Input::SoftDrop => while g.soft_drop() {},
                         }
                     }
-                    debug_assert_eq!(g.active.map(|a| (a.x, a.rot)), Some((p.x, p.rot)), "bot plan and engine disagree");
+                    debug_assert_eq!(g.active.map(|a| (a.x, a.rot)), Some((p.x, p.rot)), "plan and engine disagree");
                     g.hard_drop();
                 }
                 None => g.hard_drop(), // every placement tops out
@@ -75,24 +142,74 @@ pub fn play_match_observed(cfgs: [&Config; 2], seed: u64, max_pieces: u32, obser
             let (mut sent_now, mut raw, mut risen) = (0, 0, 0);
             for e in g.events.drain(..) {
                 match e {
-                    Event::Lock { attack, sent, .. } => (raw, sent_now) = (raw + attack, sent_now + sent),
+                    Event::Lock { attack, sent, lines, spin, combo, perfect_clear, .. } => {
+                        (raw, sent_now) = (raw + attack, sent_now + sent);
+                        let done = performed(lines, spin, combo, perfect_clear, b2b_before && g.b2b);
+                        style[i].tricks |= done;
+                        style[i].tsd += (done & trick::TSD != 0) as u32;
+                        style[i].tst += (done & trick::TST != 0) as u32;
+                        style[i].pc += (done & trick::PC != 0) as u32;
+                        if lines > 0 && b2b_before {
+                            if g.b2b { style[i].b2b_clears += 1 } else { style[i].b2b_breaks += 1 }
+                        }
+                        let m = &mut memory[i];
+                        m.recent_tricks.push_back(done);
+                        if m.recent_tricks.len() > 12 {
+                            m.recent_tricks.pop_front();
+                        }
+                        if let Some(stage) = planned_stage.filter(|_| spin == Spin::Full && lines > 0) {
+                            style[i].setup_fires += 1;
+                            if !m.fired.contains(&stage) {
+                                m.fired.push(stage);
+                            }
+                            m.recent_stages.push_back(stage);
+                            if m.recent_stages.len() > 3 {
+                                m.recent_stages.pop_front();
+                            }
+                        }
+                    }
                     Event::GarbageIn { lines } => risen += lines,
                     _ => {}
                 }
             }
             attacks[i] = sent_now;
-            observe(Turn { player: i, game: g, attack: raw, risen });
+            observe(Turn { player: i, game: g, attack: raw, sent: sent_now, risen, placement: chosen.as_ref().map(|c| &c.0), held });
         }
         match (games[0].over, games[1].over) {
             (false, false) => {}
-            (a, b) => return MatchResult { winner: if a == b { None } else { Some(a as usize) }, pieces: piece + 1, sent: sent(&games) },
+            (a, b) => {
+                return MatchResult { winner: if a == b { None } else { Some(a as usize) }, pieces: piece + 1, sent: sent(&games), style: finish(style, &memory) };
+            }
         }
         games[1].receive(attacks[0]);
         games[0].receive(attacks[1]);
     }
     let s = sent(&games);
     let winner = if s[0] == s[1] { None } else { Some((s[1] > s[0]) as usize) };
-    MatchResult { winner, pieces: max_pieces, sent: s }
+    MatchResult { winner, pieces: max_pieces, sent: s, style: finish(style, &memory) }
+}
+
+fn finish(mut style: [Style; 2], memory: &[Memory; 2]) -> [Style; 2] {
+    for i in 0..2 {
+        style[i].setups = memory[i].fired.len() as u32;
+    }
+    style
+}
+
+/// Trick bits for a lock that actually happened.
+fn performed(lines: u32, spin: Spin, combo: i32, perfect_clear: bool, b2b_chain: bool) -> u32 {
+    if lines == 0 {
+        return 0;
+    }
+    let kind = match (spin, lines) {
+        (Spin::Full, 1) => trick::TSS,
+        (Spin::Full, 2) => trick::TSD,
+        (Spin::Full, _) => trick::TST,
+        (Spin::Mini, _) => trick::MINI,
+        (Spin::None, 4) => trick::QUAD,
+        _ => 0,
+    };
+    kind | if perfect_clear { trick::PC } else { 0 } | if b2b_chain { trick::B2B } else { 0 } | if combo >= 3 { trick::COMBO } else { 0 }
 }
 
 fn sent(games: &[Live; 2]) -> [u32; 2] {

@@ -15,6 +15,9 @@ export const LEVELS = [
   { name: 'Master', pps: 2.3, inputMs: 32, hold: true },
   { name: 'Legend', pps: 3.0, inputMs: 22, hold: true },
   { name: 'Titan', pps: 4.5, inputMs: 12, hold: true },
+  // Named personalities with Titan's strength (engine levels 11 and 12).
+  { name: 'Trickster', pps: 4.5, inputMs: 12, hold: true },
+  { name: 'Chainlord', pps: 4.5, inputMs: 12, hold: true },
 ];
 
 /** One worker shared by every bot; requests are matched to replies by id. */
@@ -55,6 +58,8 @@ const FAST_GRAVITY_MS = 150;
 export class Bot {
   /** Where the bot intends to put the current piece, for the "show plan" overlay. */
   target: { piece: number; x: number; y: number; rot: number } | null = null;
+  /** The named setup its plan is working on (engine setup id), or null. */
+  goal: number | null = null;
   private plannedFor = -1;
   private thinking = false;
   private actions: number[] = [];
@@ -117,12 +122,15 @@ export class Bot {
       return;
     }
     const [piece, x, y, rot] = out;
+    const n = out[5];
+    const stage = (out[6 + n] & 0xff) | ((out[7 + n] & 0xff) << 8);
+    this.goal = stage === 0xffff ? null : stage;
     if (piece !== snap.piece) {
       this.actions = [Action.Hold]; // the next update replans for the swapped-in piece
       return;
     }
     this.target = { piece, x, y, rot };
-    const inputs = out.slice(6).map((i) => (i === 4 ? SONIC : i));
+    const inputs = out.slice(6, 6 + n).map((i) => (i === 4 ? SONIC : i));
     const { pps, inputMs } = LEVELS[this.level - 1];
     if (twentyG) {
       // The piece is already on the stack and lock delay is running: no thinking pause, and

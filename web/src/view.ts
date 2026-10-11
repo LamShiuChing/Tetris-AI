@@ -71,6 +71,7 @@ export class BoardView extends Container {
   private meter = new Graphics();
   private danger = new Graphics();
   private stats: Text;
+  private goal: Text;
   private bumpY = 0;
   private bumpV = 0;
   private shakeAmp = 0;
@@ -141,7 +142,15 @@ export class BoardView extends Container {
     this.stats = label('', 15, 0xcfc6ff);
     this.stats.anchor.set(0.5, 0);
     this.stats.position.set(W / 2, H + 40);
-    this.inner.addChild(title, this.stats);
+    this.goal = label('', 15, 0xffd93d);
+    this.goal.anchor.set(0.5, 1);
+    this.goal.position.set(W / 2, -10);
+    this.inner.addChild(title, this.stats, this.goal);
+  }
+
+  /** The named setup a bot is building, shown above the board ('' hides it). */
+  setGoal(text: string) {
+    if (this.goal.text !== text) this.goal.text = text;
   }
 
   /** Board cell (col, row in engine coords) to this view's local coords (cell center). */

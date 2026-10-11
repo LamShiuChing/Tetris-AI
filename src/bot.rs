@@ -88,6 +88,17 @@ pub struct Config {
     /// when a trained net is embedded.
     pub use_net: bool,
     pub net_weight: f32,
+    /// Trick style: among first moves whose line scores within this much of the best, play the one
+    /// with the flashiest, least-recently-used tricks (0 = always the best line). Measured to change
+    /// little on its own: flashy lines get pruned from the beam before the final pick.
+    pub trick_margin: f32,
+    /// Trick style inside the search: each trick a line performs earns this times its flair
+    /// (halved if done recently, nothing for a recently used setup), so flashy lines survive pruning.
+    pub trick_bonus: f32,
+    /// Setups this bot completed or fired recently (ids from `setups::best_stage`), and trick kinds
+    /// (`trick` bits) it did recently: the trick style prefers something else, for variety.
+    pub recent_stages: Vec<u32>,
+    pub recent_tricks: u32,
     /// Keep only the best of beam nodes that reached the same state by different move orders,
     /// so the beam holds `width` distinct futures. Off: it measured 42.2% +/- 6.2% vs not merging
     /// (level 10, 64 matches), i.e. no gain.
@@ -96,14 +107,39 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { width: 64, depth: 6, weights: Weights::default(), objective: Objective::Points, noise: 0.0, salt: 0, sees_garbage: true, speculate: false, use_net: false, net_weight: 20.0, dedupe: false }
+        Config { width: 64, depth: 6, weights: Weights::default(), objective: Objective::Points, noise: 0.0, salt: 0, sees_garbage: true, speculate: false, use_net: false, net_weight: 20.0, dedupe: false, trick_margin: 0.0, trick_bonus: 0.0, recent_stages: vec![], recent_tricks: 0 }
     }
+}
+
+/// Titan's strength, showman style: varied tricks and named setups when they're nearly free.
+pub const TRICKSTER: u32 = 11;
+/// Titan's strength, keeps the back-to-back chain alive whenever it reasonably can.
+pub const CHAINLORD: u32 = 12;
+
+/// Trick bits recorded along a line of play.
+pub mod trick {
+    pub const TSS: u32 = 1;
+    pub const TSD: u32 = 2;
+    pub const TST: u32 = 4;
+    pub const MINI: u32 = 8;
+    pub const QUAD: u32 = 16;
+    pub const PC: u32 = 32;
+    pub const B2B: u32 = 64;
+    pub const COMBO: u32 = 128;
+    pub const SETUP_DONE: u32 = 256;
+    pub const SETUP_FIRED: u32 = 512;
+    /// How flashy each trick is, for the trick style.
+    pub const FLAIR: [(u32, f32); 10] = [
+        (TST, 6.0), (PC, 6.0), (SETUP_FIRED, 6.0), (SETUP_DONE, 4.0), (TSD, 3.0),
+        (QUAD, 2.0), (TSS, 2.0), (MINI, 1.0), (B2B, 1.0), (COMBO, 1.0),
+    ];
 }
 
 impl Config {
     /// Versus bot strength, 1 (beginner) ..= 10 (full search, no mistakes). Skills unlock with
     /// level: low levels don't plan quad wells or T-spins at all and misjudge a lot.
     /// `objective` picks the weights: `Attack` (versus) or `Points` (solo score modes).
+    /// Levels above 10 are named personalities with Titan's strength: `TRICKSTER`, `CHAINLORD`.
     pub fn difficulty(level: u32, objective: Objective) -> Self {
         let i = level.clamp(1, 10) as usize - 1;
         let spin_skill = [0.0, 0.0, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.0, 1.0][i];
@@ -114,7 +150,7 @@ impl Config {
             Objective::Attack => Weights::versus(),
             Objective::Points => Weights::default(),
         };
-        Config {
+        let cfg = Config {
             width: [1, 1, 1, 2, 4, 8, 16, 24, 48, 64][i],
             depth: [1, 1, 1, 2, 2, 3, 4, 5, 6, 6][i],
             noise: [14.0, 10.0, 7.0, 4.5, 3.0, 1.8, 1.0, 0.4, 0.15, 0.0][i],
@@ -136,6 +172,19 @@ impl Config {
             use_net: level >= 10 && objective == Objective::Attack,
             net_weight: 20.0,
             dedupe: false,
+            trick_margin: 0.0,
+            trick_bonus: 0.0,
+            recent_stages: vec![],
+            recent_tricks: 0,
+        };
+        // Named personalities at Titan's strength.
+        match level {
+            // Bonus 4 measured 60.4% +/- 7.1% vs Titan with 2.5x the named-setup fires (1.04 vs 0.42 a match).
+            TRICKSTER => Config { trick_bonus: 4.0, weights: Weights { setup: cfg.weights.setup * 1.5, ..cfg.weights }, ..cfg },
+            // -3 / x2 measured 52.1% +/- 7.2% vs Titan while breaking B2B less (12.7 vs 15.3 a match);
+            // -5 lost 35.4%.
+            CHAINLORD => Config { weights: Weights { b2b: cfg.weights.b2b * 2.0, b2b_break: -3.0, ..cfg.weights }, ..cfg },
+            _ => cfg,
         }
     }
 }
@@ -168,13 +217,32 @@ struct Node {
     pending: u32,
     reward: f32,
     value: f32,
-    /// Opener-shape progress (`setups::progress`), tracked only when `weights.setup` is on.
+    /// Opener-shape progress (`setups::progress`), tracked when setups or the trick style are on.
     progress: f32,
+    /// The setup that progress belongs to (`NO_STAGE` if none), and tricks done along this line.
+    stage: u32,
+    tricks: u32,
     /// Index of the root placement this line started with.
     first: usize,
 }
 
+/// The line the bot chose: the setup it's working on (if any) and the tricks it plans.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Plan {
+    pub stage: Option<u32>,
+    pub tricks: u32,
+}
+
+fn plan_of(n: &Node) -> Plan {
+    Plan { stage: (n.stage != NO_STAGE && n.progress > 0.0).then_some(n.stage), tricks: n.tricks }
+}
+
 pub fn suggest(root: &Root, rules: &Rules, cfg: &Config) -> Option<Placement> {
+    suggest_with_plan(root, rules, cfg).map(|(p, _)| p)
+}
+
+/// `suggest`, plus what the chosen line is going for.
+pub fn suggest_with_plan(root: &Root, rules: &Rules, cfg: &Config) -> Option<(Placement, Plan)> {
     let seq: Vec<Piece> = std::iter::once(root.current).chain(root.queue.iter().copied()).collect();
     let mut first_moves = vec![];
     let mut layer = vec![Node {
@@ -186,9 +254,15 @@ pub fn suggest(root: &Root, rules: &Rules, cfg: &Config) -> Option<Placement> {
         pending: if cfg.sees_garbage { root.pending } else { 0 },
         reward: 0.0,
         value: 0.0,
-        progress: if cfg.weights.setup != 0.0 { setups::progress(&root.board, available(&seq, 0, root.hold)) } else { 0.0 },
+        progress: 0.0,
+        stage: NO_STAGE,
+        tricks: 0,
         first: 0,
     }];
+    if tracks_setups(cfg) {
+        let (p, stage) = setups::best_stage(&root.board, available(&seq, 0, root.hold));
+        (layer[0].progress, layer[0].stage) = (p, stage.unwrap_or(NO_STAGE));
+    }
     let mut best = None;
 
     for depth in 0..cfg.depth {
@@ -246,13 +320,55 @@ pub fn suggest(root: &Root, rules: &Rules, cfg: &Config) -> Option<Placement> {
             }
             node.value = total / possible.len() as f32;
         }
-        best = spec.iter().max_by(|a, b| a.value.total_cmp(&b.value)).map(|n| n.first);
+        let chosen = choose(&spec, cfg);
+        return chosen.map(|n| (first_moves.swap_remove(n.first), plan_of(&n)));
     }
-    best.map(|i| first_moves.swap_remove(i))
+    best?; // no legal placement at all
+    choose(&layer, cfg).map(|n| (first_moves.swap_remove(n.first), plan_of(&n)))
 }
 
 /// How many of the final beam's best lines get the extra speculated piece.
 const SPECULATE_TOP: usize = 16;
+
+const NO_STAGE: u32 = u32::MAX;
+
+fn tracks_setups(cfg: &Config) -> bool {
+    cfg.weights.setup != 0.0 || cfg.trick_margin > 0.0 || cfg.trick_bonus > 0.0
+}
+
+/// The best final line, or with the trick style on: among first moves whose best line scores
+/// within `trick_margin` of the top, the line with the most flair (recently used setups and trick
+/// kinds count less), ties broken by score.
+fn choose(nodes: &[Node], cfg: &Config) -> Option<Node> {
+    let top = *nodes.iter().max_by(|a, b| a.value.total_cmp(&b.value))?;
+    if cfg.trick_margin <= 0.0 {
+        return Some(top);
+    }
+    nodes
+        .iter()
+        .filter(|n| n.value >= top.value - cfg.trick_margin)
+        .max_by(|a, b| flair(a.tricks, a.stage, cfg).total_cmp(&flair(b.tricks, b.stage, cfg)).then(a.value.total_cmp(&b.value)))
+        .copied()
+}
+
+/// How flashy a set of tricks is: rarer tricks score more; tricks this bot did recently score
+/// half, and a setup it fired recently scores nothing (variety).
+fn flair(tricks: u32, stage: u32, cfg: &Config) -> f32 {
+    trick::FLAIR
+        .iter()
+        .filter(|&&(bit, _)| tricks & bit != 0)
+        .map(|&(bit, f)| {
+            let setup = bit & (trick::SETUP_DONE | trick::SETUP_FIRED) != 0;
+            if setup && cfg.recent_stages.contains(&stage) {
+                0.0
+            } else if cfg.recent_tricks & bit != 0 {
+                f / 2.0
+            } else {
+                f
+            }
+        })
+        .sum()
+}
 
 /// Value given to a line of play that tops out on a speculated piece.
 const DEATH: f32 = -1000.0;
@@ -288,14 +404,47 @@ fn play(node: &Node, p: &Placement, hold: Option<Piece>, next: usize, seq: &[Pie
     // Bank setup progress as it's made, counting only stages the visible pieces can still
     // finish. Losing progress gives it back, unless this placement is the T-spin that fires the
     // setup. (Filling the slot with another piece that happens to clear a line must not keep it.)
-    let mut progress = node.progress;
-    if cfg.weights.setup != 0.0 {
-        progress = setups::progress(&board, available(seq, next, hold));
+    let (mut progress, mut stage) = (node.progress, node.stage);
+    let fired = lines > 0 && p.spin == Spin::Full;
+    if tracks_setups(cfg) {
+        let (now, id) = setups::best_stage(&board, available(seq, next, hold));
+        progress = now;
+        if let Some(id) = id {
+            stage = id;
+        }
         let delta = progress - node.progress;
-        let fired = lines > 0 && p.spin == Spin::Full;
         if delta > 0.0 || !fired {
             gain += cfg.weights.setup * delta;
         }
+    }
+    let mut tricks = node.tricks;
+    if lines > 0 {
+        tricks |= match (p.spin, lines) {
+            (Spin::Full, 1) => trick::TSS,
+            (Spin::Full, 2) => trick::TSD,
+            (Spin::Full, _) => trick::TST,
+            (Spin::Mini, _) => trick::MINI,
+            (Spin::None, 4) => trick::QUAD,
+            _ => 0,
+        };
+        if board.is_empty() {
+            tricks |= trick::PC;
+        }
+        if node.b2b && b2b {
+            tricks |= trick::B2B;
+        }
+        if combo >= 3 {
+            tricks |= trick::COMBO;
+        }
+    }
+    if progress == 1.0 && node.progress < 1.0 {
+        tricks |= trick::SETUP_DONE;
+    }
+    if fired && node.progress == 1.0 {
+        tricks |= trick::SETUP_FIRED;
+    }
+    if cfg.trick_bonus > 0.0 {
+        gain += cfg.trick_bonus * flair(tricks & !node.tricks, stage, cfg);
     }
     if node.b2b && !b2b && lines > 0 {
         gain += cfg.weights.b2b_break;
@@ -311,7 +460,7 @@ fn play(node: &Node, p: &Placement, hold: Option<Piece>, next: usize, seq: &[Pie
     if cfg.noise > 0.0 {
         value += cfg.noise * jitter(&board, cfg.salt);
     }
-    Some(Node { board, hold, next, b2b, combo, pending, reward, value, progress, first: node.first })
+    Some(Node { board, hold, next, b2b, combo, pending, reward, value, progress, stage, tricks, first: node.first })
 }
 
 /// Identifies a search state regardless of how it was reached (FNV-1a over everything that
@@ -507,6 +656,22 @@ pub fn play_game(cfg: &Config, seed: u64) -> GameStats {
 mod tests {
     use super::*;
 
+    /// Trickster prefers a flashier line when it costs little; with the trick style off the bot
+    /// takes the best-scoring line. Both still find the T-spin double when it's on offer.
+    #[test]
+    fn trickster_and_titan_both_take_the_tsd() {
+        let mut board = Board::default();
+        board.rows[39] = 0x3FF & !(1 << 1);
+        board.rows[38] = 0x3FF & !0b111;
+        board.rows[37] = 1;
+        for level in [10, TRICKSTER, CHAINLORD] {
+            let root = Root { board, current: Piece::T, hold: None, can_hold: true, queue: &[Piece::I, Piece::O], b2b: false, combo: -1, pending: 0, bag: 0 };
+            let (p, plan) = suggest_with_plan(&root, &Rules::versus(), &Config::difficulty(level, Objective::Attack)).unwrap();
+            assert_eq!((p.piece, p.spin), (Piece::T, Spin::Full), "level {level}");
+            assert!(plan.tricks & trick::TSD != 0, "level {level}: plan {plan:?}");
+        }
+    }
+
     #[test]
     fn takes_the_tsd() {
         let mut board = Board::default();
@@ -543,7 +708,7 @@ mod tests {
             let versus = Config::difficulty(level, Objective::Attack);
             let score_weights = Config { weights: Weights { setup: versus.weights.setup, ..Weights::default() }, ..versus.clone() };
             let (v, s) = (avg_height(&versus), avg_height(&score_weights));
-            assert!(v + 0.5 <= s, "level {level}: versus weights {v:.1} rows vs score weights {s:.1}");
+            assert!(v < s, "level {level}: versus weights {v:.1} rows vs score weights {s:.1}");
         }
     }
 

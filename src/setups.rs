@@ -84,10 +84,15 @@ pub fn piece_mask(pieces: impl IntoIterator<Item = Piece>) -> u8 {
 /// Above the stage, the bot may keep stacking (it has to while it waits for the T), but only in
 /// columns the stage's top row covers: the open columns are the T's way in.
 pub fn progress(b: &Board, available: u8) -> f32 {
+    best_stage(b, available).0
+}
+
+/// `progress`, plus which setup the best stage belongs to (an id for `setup_name`).
+pub fn best_stage(b: &Board, available: u8) -> (f32, Option<u32>) {
     let idx = index();
     let height = HEIGHT as usize - b.rows.iter().position(|&r| r != 0).unwrap_or(HEIGHT as usize);
     if height == 0 {
-        return 0.0;
+        return (0.0, None);
     }
     // above[k] = columns with any cell in rows 0..k, so "anything above row k" is one lookup.
     let mut above = [0u16; HEIGHT as usize + 1];
@@ -95,7 +100,19 @@ pub fn progress(b: &Board, available: u8) -> f32 {
         above[k + 1] = above[k] | b.rows[k];
     }
     let bottom = b.rows[HEIGHT as usize - 1];
-    idx.by_bottom[bottom as usize].iter().filter_map(|&i| stage_progress(&idx.shapes[i], b, &above, available)).fold(0.0, f32::max)
+    let mut best = (0.0, None);
+    for &i in &idx.by_bottom[bottom as usize] {
+        if let Some(p) = stage_progress(&idx.shapes[i], b, &above, available).filter(|&p| p > best.0) {
+            best = (p, Some(i as u32 / 2)); // shapes come in (normal, mirrored) pairs
+        }
+    }
+    best
+}
+
+/// Display name of a setup id from `best_stage`, e.g. "TKI 3 Opening" (the wiki diagram number dropped).
+pub fn setup_name(id: u32) -> &'static str {
+    let name = SHAPES.iter().chain(WIKI_SHAPES).nth(id as usize).map_or("", |(n, _)| *n);
+    name.rsplit_once(" #").map_or(name, |(base, _)| base)
 }
 
 fn stage_progress(s: &Shape, b: &Board, above: &[u16], available: u8) -> Option<f32> {
@@ -142,6 +159,15 @@ mod tests {
         assert_eq!(progress(&board(&["...OO.....", "...OO.....", "L..ZZ.S...", "L...ZZSSOO", "LL.IIIISOO"]), 0), 1.0);
         // ...but covering the columns over the T-slot doesn't.
         assert_eq!(progress(&board(&[".OO.......", ".OO.......", "L..ZZ.S...", "L...ZZSSOO", "LL.IIIISOO"]), 0), 0.0);
+    }
+
+    #[test]
+    fn names_setups() {
+        let tki = board(&["L..ZZ.S...", "L...ZZSSOO", "LL.IIIISOO"]);
+        let (p, id) = best_stage(&tki, 0);
+        assert_eq!(p, 1.0);
+        assert!(setup_name(id.unwrap()).starts_with("TKI"), "{}", setup_name(id.unwrap()));
+        assert!(!setup_name(id.unwrap()).contains('#'));
     }
 
     #[test]
