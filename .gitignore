@@ -7,3 +7,5 @@ tune.log
 tune_vs.log
 nets/gen*
 /external
+video/
+__pycache__/

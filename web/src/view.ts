@@ -18,6 +18,8 @@ export interface Textures {
   /** Index 1..7 pieces, 8 garbage (matches engine color codes). */
   blocks: Texture[];
   outline: Texture;
+  /** Bolder outline for the analysis overlay's landing spots and planned pieces. */
+  plan: Texture;
   dot: Texture;
 }
 
@@ -48,7 +50,11 @@ export function makeTextures(renderer: Renderer): Textures {
   const dot = renderer.generateTexture(
     new Graphics().circle(16, 16, 16).fill({ color: 0xffffff, alpha: 0.25 }).circle(16, 16, 9).fill({ color: 0xffffff, alpha: 0.6 }).circle(16, 16, 4).fill(0xffffff),
   );
-  return { blocks: [outline, ...COLORS.map(block), block(GARBAGE)], outline, dot };
+  const plan = renderer.generateTexture({
+    target: new Graphics().roundRect(2, 2, CELL - 4, CELL - 4, 6).fill({ color: 0xffffff, alpha: 0.3 }).stroke({ width: 4, color: 0xffffff }),
+    resolution: 3,
+  });
+  return { blocks: [outline, ...COLORS.map(block), block(GARBAGE)], outline, plan, dot };
 }
 
 function label(text: string, size: number, color = 0xffffff) {
@@ -68,6 +74,9 @@ export class BoardView extends Container {
   private ghost: Sprite[] = [];
   private active: Sprite[] = [];
   private target: Sprite[] = [];
+  /** Analysis overlay (replay videos): where the piece will land, then the bot's planned pieces. */
+  private plan: Sprite[] = [];
+  private planNumbers: Text[] = [];
   private holdBox = new Container();
   private nextBox = new Container();
   private meter = new Graphics();
@@ -115,6 +124,15 @@ export class BoardView extends Container {
     this.inner.addChild(grid);
     make(this.ghost, this.inner);
     make(this.target, this.inner);
+    for (let k = 0; k < 6; k++) {
+      make(this.plan, this.inner);
+      const n = label(String(k + 1), 18);
+      n.anchor.set(0.5);
+      this.planNumbers.push(n);
+    }
+    this.plan.forEach((s) => (s.texture = tex.plan));
+    this.inner.addChild(...this.planNumbers);
+    this.showPlan([]);
     make(this.active, this.inner);
     this.ghost.forEach((s) => (s.alpha = 0.22));
     this.target.forEach((s) => (s.texture = tex.outline));
@@ -211,6 +229,29 @@ export class BoardView extends Container {
     this.stats.text = stats;
   }
 
+  /** Outlines `line` (engine cells per piece): the first, where the falling piece lands, solid;
+   * the rest, the bot's planned next pieces, faint and numbered. Empty hides it. */
+  showPlan(line: { piece: number; cells: number[][] }[]) {
+    this.plan.forEach((s, i) => {
+      const k = i >> 2;
+      const step = line[k];
+      const cell = step?.cells[i & 3];
+      s.visible = !!cell && cell[1] >= FIRST_ROW;
+      if (!step || !cell) return;
+      s.position.set(cell[0] * CELL, (cell[1] - 20) * CELL);
+      s.tint = COLORS[step.piece];
+      s.alpha = k === 0 ? 1 : 0.7;
+    });
+    this.planNumbers.forEach((n, k) => {
+      const step = line[k];
+      n.visible = !!step && line.length > 1;
+      if (!step) return;
+      const cx = step.cells.reduce((a, c) => a + c[0], 0) / 4;
+      const cy = step.cells.reduce((a, c) => a + c[1], 0) / 4;
+      n.position.set(cx * CELL + CELL / 2, (cy - 20) * CELL + CELL / 2);
+    });
+  }
+
   private place(sprites: Sprite[], piece: number, x: number, y: number, rot: number, style: (s: Sprite) => void) {
     if (piece < 0) {
       sprites.forEach((s) => (s.visible = false));
@@ -244,5 +285,72 @@ export class BoardView extends Container {
         box.addChild(s);
       }
     });
+  }
+}
+
+/** Per-bot analysis column beside a board (replay videos): search effort, the value net's read of
+ * the board, and attack. */
+export class AnalysisPanel extends Container {
+  private values: Text[];
+  private bar = new Graphics();
+  private evalText: Text;
+  private graph = new Graphics();
+  private history: number[] = [];
+
+  constructor(name: string, accent: number, rows: string[]) {
+    super();
+    const w = 210;
+    this.addChild(new Graphics().roundRect(0, 0, w, H, 14).fill({ color: 0x0d0a24, alpha: 0.82 }).stroke({ width: 2, color: accent, alpha: 0.6 }));
+    const title = label(name, 22, accent);
+    title.position.set(16, 14);
+    const sub = label('SEARCH', 13, 0xcfc6ff);
+    sub.position.set(16, 50);
+    this.addChild(title, sub);
+    this.values = rows.map((r, i) => {
+      const k = label(r, 13, 0xcfc6ff);
+      k.position.set(16, 84 + i * 58);
+      const v = label('—', 26);
+      v.position.set(16, 102 + i * 58);
+      this.addChild(k, v);
+      return v;
+    });
+    const y = 84 + rows.length * 58 + 12;
+    const k = label('BOARD EVAL (VALUE NET)', 12, 0xcfc6ff);
+    k.position.set(16, y);
+    this.evalText = label('—', 26);
+    this.evalText.position.set(16, y + 18);
+    this.bar.position.set(16, y + 58);
+    const g = label('EVAL OVER THE MATCH', 12, 0xcfc6ff);
+    g.position.set(16, y + 92);
+    this.graph.position.set(16, y + 116);
+    this.addChild(k, this.evalText, this.bar, g, this.graph);
+    this.setEval(null);
+  }
+
+  set(i: number, text: string) {
+    if (this.values[i].text !== text) this.values[i].text = text;
+  }
+
+  /** -1 (this board looks lost) .. +1 (looks won), or null before the first move. */
+  setEval(v: number | null) {
+    const w = 178;
+    this.bar.clear().roundRect(0, 0, w, 14, 7).fill({ color: 0x000000, alpha: 0.5 }).rect(w / 2 - 1, -3, 2, 20).fill({ color: 0xffffff, alpha: 0.5 });
+    if (v === null) return;
+    // Every move's eval, squeezed into the graph's width.
+    this.history.push(Math.max(-1, Math.min(1, v)));
+    const gh = 70;
+    this.graph.clear().rect(0, 0, w, gh).fill({ color: 0x000000, alpha: 0.35 }).rect(0, gh / 2, w, 1).fill({ color: 0xffffff, alpha: 0.35 });
+    this.history.forEach((e, i) => {
+      const px = (i / Math.max(1, this.history.length - 1)) * w;
+      const py = gh / 2 - (e * gh) / 2;
+      if (i === 0) this.graph.moveTo(px, py);
+      else this.graph.lineTo(px, py);
+    });
+    this.graph.stroke({ width: 2, color: 0xffffff, alpha: 0.9 });
+    const x = (Math.max(-1, Math.min(1, v)) * w) / 2;
+    const color = v >= 0 ? 0x7be36b : 0xff4d6a;
+    this.bar.roundRect(Math.min(w / 2, w / 2 + x), 0, Math.abs(x), 14, 7).fill(color);
+    this.evalText.text = `${v >= 0 ? '+' : ''}${v.toFixed(2)}`;
+    this.evalText.style.fill = color;
   }
 }

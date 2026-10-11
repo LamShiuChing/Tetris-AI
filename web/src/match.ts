@@ -6,7 +6,7 @@ import { Bot, LEVELS, type Physics, type Planner } from './bot';
 import { Action, Player, pieceCells, setupName, type Exports, type GameEvent, type Snapshot } from './engine';
 import { FONT, textResolution, type Fx } from './fx';
 import type { Controls } from './input';
-import { BoardView, CELL, COLORS, GARBAGE, H, W, type Textures } from './view';
+import { AnalysisPanel, BoardView, CELL, COLORS, GARBAGE, H, W, type Textures } from './view';
 
 export type Side = { kind: 'human' } | { kind: 'bot'; level: number } | { kind: 'replay' };
 export type Mode = 'versus' | 'marathon' | 'master' | 'replay';
@@ -17,8 +17,23 @@ export interface Replay {
   names: [string, string];
   winner: string | null;
   /** Per turn, per side: hold first?, and inputs (L/R move, C/W rotate, D drop to floor). */
-  turns: ({ h: boolean; i: string } | null)[][];
+  turns: (ReplayMove | null)[][];
 }
+
+/** One recorded move. Newer recordings add analysis: landing cells `c` ([x, y], engine rows),
+ * think ms, positions searched `n`, the value net's read of the board after it `v` (-1..1), and
+ * for Titan its planned line `l` (piece letter and cells per placement, `l[0]` = this move). */
+export interface ReplayMove {
+  h: boolean;
+  i: string;
+  c?: number[][];
+  ms?: number;
+  n?: number;
+  v?: number;
+  l?: { p: string; c: number[][] }[];
+}
+
+const PIECE_LETTERS = 'IJLOSTZ';
 
 export interface MatchConfig {
   mode: Mode;
@@ -29,6 +44,11 @@ export interface MatchConfig {
   /** Time scale, for watching bots faster or slower. */
   speed: number;
   replay?: Replay;
+  /** Boards stacked top and bottom on an 816x1450 stage (video mode). */
+  vertical?: boolean;
+  /** Replay analysis on a 1600x900 stage (video mode): each side's search stats in a panel, where
+   * its piece will land, and the planned line when the replay recorded one. */
+  analysis?: boolean;
 }
 
 interface ModeRules {
@@ -106,6 +126,7 @@ export class Match extends Container {
   private turnAttack = [0, 0];
   /** Per board, the callouts for the latest clear; a new clear hides them so they never pile up. */
   private callouts: Text[][] = [[], []];
+  private panels: AnalysisPanel[] = [];
   /** Per side: biggest combo, T-spin clears, quads and perfect clears so far. */
   private extra = [0, 1].map(() => ({ maxCombo: 0, tspins: 0, quads: 0, pcs: 0 }));
   private names: string[] = [];
@@ -117,7 +138,7 @@ export class Match extends Container {
     private engine: Exports,
     tex: Textures,
     private fx: Fx,
-    planner: Planner,
+    planners: Planner[],
     private controls: Controls,
     private cfg: MatchConfig,
   ) {
@@ -130,7 +151,8 @@ export class Match extends Container {
       p.start(seed, this.rules.gravityMs(1, 0), this.rules.lockDelayMs(1)); // same seed: same pieces for everyone
       return p;
     });
-    const xs = solo ? [500] : [200, 800];
+    const at = solo ? [[500, BOARD_Y]] : cfg.vertical ? [[276, 110], [276, 800]] : cfg.analysis ? [[400, 150], [968, 150]] : [[200, BOARD_Y], [800, BOARD_Y]];
+    const mid = cfg.vertical ? { x: 408, y: 765, clock: 34 } : cfg.analysis ? { x: 816, y: 430, clock: 100 } : { x: 640, y: BOARD_Y + H / 2, clock: 40 };
     this.views = cfg.sides.map((side, i) => {
       const name =
         side.kind === 'human'
@@ -142,11 +164,11 @@ export class Match extends Container {
               : `${LEVELS[side.level - 1].name.toUpperCase()} · LV ${side.level}`;
       this.names[i] = name;
       const v = new BoardView(engine, tex, name, i === 0 ? 0x5fd3ff : 0xff5fa2);
-      v.position.set(xs[i], BOARD_Y);
+      v.position.set(at[i][0], at[i][1]);
       this.addChild(v);
       return v;
     });
-    this.bots = cfg.sides.map((side, i) => (side.kind === 'bot' ? new Bot(this.players[i], planner, side.level) : null));
+    this.bots = cfg.sides.map((side, i) => (side.kind === 'bot' ? new Bot(this.players[i], planners[i], side.level) : null));
     this.snaps = this.players.map((p) => p.snapshot());
     this.physics = this.players.map(() => ({ gravityMs: this.rules.gravityMs(1, 0), lockDelayMs: this.rules.lockDelayMs(1), solo }));
 
@@ -169,12 +191,22 @@ export class Match extends Container {
       this.hud = [102, 182, 252, 322].map((dy) => text('', 30, 0xffffff, x, BOARD_Y + dy, 0));
       this.clock = this.hud[3];
     } else {
-      text('VS', 44, 0xffffff, 640, BOARD_Y + H / 2);
-      this.clock = text('0:00', 26, 0xcfc6ff, 640, 40);
+      // Vertical / analysis: no room for VS between the boards.
+      if (!cfg.vertical && !cfg.analysis) text('VS', 44, 0xffffff, mid.x, mid.y);
+      if (cfg.analysis) {
+        text('LIVE SEARCH ANALYSIS', 20, 0xcfc6ff, mid.x, 44);
+        this.panels = this.names.map((name, i) => {
+          const panel = new AnalysisPanel(name, i === 0 ? 0x5fd3ff : 0xff5fa2, ['POSITIONS SEARCHED', 'THINK TIME', 'PLANNED AHEAD', 'ATTACK · APM']);
+          panel.position.set(i === 0 ? 30 : 1360, 150);
+          this.addChild(panel);
+          return panel;
+        });
+      }
+      this.clock = text('0:00', 26, 0xcfc6ff, mid.x, mid.clock);
     }
     this.banner = new Text({ text: '', resolution: textResolution(), style: { ...style, fontSize: 120, stroke: { color: 0x1a1036, width: 16 }, dropShadow: { color: 0x000000, alpha: 0.5, distance: 8, blur: 4, angle: Math.PI / 2 } } });
     this.banner.anchor.set(0.5);
-    this.banner.position.set(640, 360);
+    this.banner.position.set(mid.x, cfg.vertical || cfg.analysis ? mid.y : 360);
     this.addChild(this.top, this.banner);
     controls.reset();
     this.views.forEach((v, i) => v.render(this.snaps[i], null, this.statsText(i)));
@@ -253,6 +285,8 @@ export class Match extends Container {
         audio.levelUp();
       }
       this.views[i].render(this.snaps[i], this.cfg.showPlan ? (this.bots[i]?.target ?? null) : null, this.statsText(i));
+      const s = this.snaps[i];
+      this.panels[i]?.set(3, `${s.sent} · ${Math.round(s.sent / Math.max(this.t / 60000, 1 / 60))}`);
       const goal = this.bots[i]?.goal ?? null;
       this.views[i].setGoal(goal === null ? '' : `→ ${setupName(this.engine, goal)}`);
     }
@@ -430,6 +464,7 @@ export class Match extends Container {
         turn.forEach((mv, i) => {
           if (!mv) return;
           const p = this.players[i];
+          if (this.cfg.analysis) this.analyze(i, mv);
           const q: (() => void)[] = mv.h ? [() => p.input(Action.Hold)] : [];
           for (const c of mv.i) {
             if (c === 'D') q.push(() => {
@@ -437,13 +472,33 @@ export class Match extends Container {
             });
             else q.push(() => p.input({ L: Action.Left, R: Action.Right, C: Action.Cw, W: Action.Ccw }[c as 'L' | 'R' | 'C' | 'W']));
           }
-          q.push(() => p.input(Action.Hard));
+          q.push(() => {
+            p.input(Action.Hard);
+            // The next piece is out and garbage from this lock has risen: show its plan already.
+            const next = replay.turns[this.replayTurn]?.[i];
+            if (!this.cfg.analysis) return;
+            if (next) this.analyze(i, next);
+            else this.views[i].showPlan([]);
+          });
           this.replayActions[i] = q;
         });
       }
       for (const q of this.replayActions) q.shift()?.();
       this.replayWait += REPLAY_STEP_MS;
     }
+  }
+
+  /** Shows what side `i`'s bot decided for the move it's about to play. */
+  private analyze(i: number, mv: ReplayMove) {
+    const piece = (letter: string) => PIECE_LETTERS.indexOf(letter);
+    const line = mv.l?.map((s) => ({ piece: piece(s.p), cells: s.c })) ?? (mv.c ? [{ piece: this.snaps[i].piece, cells: mv.c }] : []);
+    if (mv.h && !mv.l && mv.c) line[0].piece = this.snaps[i].hold >= 0 ? this.snaps[i].hold : this.snaps[i].queue[0];
+    this.views[i].showPlan(line);
+    const panel = this.panels[i];
+    if (mv.n !== undefined) panel.set(0, mv.n.toLocaleString('en-US'));
+    if (mv.ms !== undefined) panel.set(1, `${mv.ms} ms`);
+    panel.set(2, mv.l ? `${mv.l.length} piece${mv.l.length === 1 ? '' : 's'}` : 'not reported');
+    if (mv.v !== undefined) panel.setEval(mv.v);
   }
 
   /** `winner`: side index, or -1 for a draw / solo game over. Solo goal reached = winner 0. */

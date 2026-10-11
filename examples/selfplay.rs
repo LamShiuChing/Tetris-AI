@@ -52,7 +52,8 @@ fn main() {
 }
 
 fn play_one(seed: u64, use_net: bool, out: &mut Vec<f32>) {
-    let base = Config { width: 16, noise: 0.5, ..Config::difficulty(10, Objective::Attack) };
+    // Level 10 ships with the net on; the baseline here is the hand eval.
+    let base = Config { width: 16, noise: 0.5, use_net: false, ..Config::difficulty(10, Objective::Attack) };
     let mut cfgs = [Config { salt: seed * 2, ..base.clone() }, Config { salt: seed * 2 + 1, ..base }];
     if use_net {
         let weight = std::env::var("NET_WEIGHT").map_or(60.0, |v| v.parse().unwrap());

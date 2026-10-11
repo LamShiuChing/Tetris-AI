@@ -1,7 +1,7 @@
 //! Bot-vs-bot win rate on the headless versus engine (real garbage, equal speed). Each seed is
 //! played twice with seats swapped. `cargo run --release --example vs [seeds] [variant] [beam width]`.
 
-use tetris_ai::bot::{CHAINLORD, Config, Objective, TRICKSTER, Weights};
+use tetris_ai::bot::{CHAINLORD, Config, Objective, PERFECTIONIST, RENEGADE, Specialty, TRICKSTER, Weights};
 use tetris_ai::versus::play_match;
 
 const MAX_PIECES: u32 = 400;
@@ -12,20 +12,43 @@ fn configs(variant: &str, width: usize) -> [(&'static str, Config); 2] {
         "garbage" => [("garbage-aware", base.clone()), ("garbage-blind", Config { sees_garbage: false, ..base })],
         "speculate" => [("speculating", base.clone()), ("not speculating", Config { speculate: false, ..base })],
         "setups" => [("setup steering", base.clone()), ("no setups", Config { weights: Weights { setup: 0.0, ..base.weights.clone() }, ..base })],
-        "net" => [("value net", Config { use_net: true, net_weight: net_weight(), ..base.clone() }), ("hand-weighted eval", base)],
+        "net" => [("value net", Config { use_net: true, net_weight: net_weight(), ..base.clone() }), ("hand-weighted eval", Config { use_net: false, ..base })],
         "trickster" => [("Trickster", tuned(Config::difficulty(TRICKSTER, Objective::Attack))), ("Titan", base)],
         "chainlord" => [("Chainlord", tuned(Config::difficulty(CHAINLORD, Objective::Attack))), ("Titan", base)],
+        "renegade" => [("Renegade", tuned(Config { width, ..Config::difficulty(RENEGADE, Objective::Attack) })), ("Titan", base)],
+        "perfectionist" => [("Perfectionist", tuned(Config { width, ..Config::difficulty(PERFECTIONIST, Objective::Attack) })), ("Titan", base)],
         "dedupe" => [("merging duplicate states", base.clone()), ("no merging", Config { dedupe: false, ..base })],
         "width128" => [("beam 128", Config { width: 128, ..base.clone() }), ("beam 64", base)],
         "b2b" => [("B2B policy", base.clone()), ("no B2B policy", Config { weights: Weights { b2b_break: 0.0, ..base.weights.clone() }, ..base })],
         "tuned" => [("tuned versus weights", base.clone()), ("hand-picked", Config { weights: hand(), ..base })],
-        _ => panic!("variant: trickster | chainlord | garbage | speculate | setups | dedupe | width128 | b2b | net | tuned"),
+        _ => panic!("variant: trickster | chainlord | renegade | perfectionist | garbage | speculate | setups | dedupe | width128 | b2b | net | tuned"),
     }
 }
 
-/// Env overrides for sweeping a personality: TRICK_MARGIN, TRICK_BONUS, B2B_BREAK, B2B_HOLD (multiplies b2b).
+/// Env overrides for sweeping a personality: TRICK_MARGIN, TRICK_BONUS, B2B_BREAK, B2B_HOLD (multiplies
+/// Titan's b2b), SETUP (multiplies Titan's setup), NET (0 = value net off), REN_STEP, REN_DEPTH,
+/// PC_BONUS, PC_HIGH, PC_REGION.
 fn tuned(mut c: Config) -> Config {
     let env = |k: &str| std::env::var(k).ok().map(|v| v.parse::<f32>().unwrap());
+    let titan = Config::difficulty(10, Objective::Attack).weights;
+    if let Some(m) = env("SETUP") {
+        c.weights.setup = titan.setup * m;
+    }
+    if env("NET") == Some(0.0) {
+        c.use_net = false;
+    }
+    match &mut c.specialty {
+        Specialty::Ren { step, depth } => {
+            *step = env("REN_STEP").unwrap_or(*step);
+            *depth = env("REN_DEPTH").unwrap_or(*depth);
+        }
+        Specialty::PerfectClear { bonus, high, region } => {
+            *bonus = env("PC_BONUS").unwrap_or(*bonus);
+            *high = env("PC_HIGH").unwrap_or(*high);
+            *region = env("PC_REGION").unwrap_or(*region);
+        }
+        Specialty::Normal => {}
+    }
     if let Some(m) = env("TRICK_MARGIN") {
         c.trick_margin = m;
     }
@@ -36,7 +59,7 @@ fn tuned(mut c: Config) -> Config {
         c.weights.b2b_break = b;
     }
     if let Some(h) = env("B2B_HOLD") {
-        c.weights.b2b = Config::difficulty(10, Objective::Attack).weights.b2b * h;
+        c.weights.b2b = titan.b2b * h;
     }
     c
 }
@@ -93,7 +116,7 @@ fn main() {
     for (i, name) in [a_name, b_name].into_iter().enumerate() {
         let avg = |f: fn(&tetris_ai::versus::Style) -> u32| results.iter().map(|r| f(&r.style[i]) as f64).sum::<f64>() / n;
         println!(
-            "  {name:>10}: per match TSD {:.1}  TST {:.2}  PC {:.2}  setup fires {:.2} ({:.2} distinct)  B2B clears {:.1} / breaks {:.1}",
+            "  {name:>10}: per match TSD {:.1}  TST {:.2}  PC {:.2}  setup fires {:.2} ({:.2} distinct)  B2B clears {:.1} / breaks {:.1}  longest B2B {:.1}  max combo {:.1}  trick kinds {:.1}",
             avg(|s| s.tsd),
             avg(|s| s.tst),
             avg(|s| s.pc),
@@ -101,6 +124,9 @@ fn main() {
             avg(|s| s.setups),
             avg(|s| s.b2b_clears),
             avg(|s| s.b2b_breaks),
+            avg(|s| s.max_b2b),
+            avg(|s| s.max_combo),
+            avg(|s| s.tricks.count_ones()),
         );
     }
 }

@@ -541,3 +541,35 @@ body.reduce-motion *::before {
     animation: none;
   }
 }
+
+/* ---------- video mode (?video=): frames are captured on a virtual clock, so no CSS motion ---------- */
+
+body.video *,
+body.video *::before {
+  animation: none !important;
+  transition: none !important;
+}
+body.video .overlay {
+  zoom: 1.9;
+}
+body.video.wide .overlay {
+  zoom: 1.5;
+}
+body.video #ui,
+body.video #result .row,
+body.video #result .hint {
+  display: none;
+}
+#videoTitle .logo {
+  font-size: 64px;
+}
+#videoTitle .vs {
+  font-size: 40px;
+  color: var(--lemon);
+}
+#videoTitle .a {
+  color: var(--sky);
+}
+#videoTitle .b {
+  color: var(--pink);
+}

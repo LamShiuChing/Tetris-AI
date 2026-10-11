@@ -50,12 +50,14 @@ pub fn features(b: &Board, b2b: bool, combo: i32, pending: u32, tsd: bool, tst: 
     f
 }
 
+/// Weights are stored transposed (one row per input), so eval adds one row per nonzero input:
+/// most inputs are 0 (empty cells, no holes), and nothing needs a horizontal sum.
 pub struct Net {
-    w1: Vec<f32>,
-    b1: Vec<f32>,
-    w2: Vec<f32>,
-    b2: Vec<f32>,
-    w3: Vec<f32>,
+    w1t: Vec<[f32; H1]>,
+    b1: [f32; H1],
+    w2t: Vec<[f32; H2]>,
+    b2: [f32; H2],
+    w3: [f32; H2],
     b3: f32,
     /// Targets were divided by this for training.
     scale: f32,
@@ -69,34 +71,28 @@ impl Net {
         let mut it = v.into_iter();
         let mut take = |n: usize| (&mut it).take(n).collect::<Vec<f32>>();
         let scale = take(1)[0];
-        Net { w1: take(H1 * INPUTS), b1: take(H1), w2: take(H2 * H1), b2: take(H2), w3: take(H2), b3: take(1)[0], scale }
+        let (w1, b1, w2, b2, w3) = (take(H1 * INPUTS), take(H1), take(H2 * H1), take(H2), take(H2));
+        let w1t = (0..INPUTS).map(|i| std::array::from_fn(|j| w1[j * INPUTS + i])).collect();
+        let w2t = (0..H1).map(|i| std::array::from_fn(|j| w2[j * H1 + i])).collect();
+        Net { w1t, b1: b1.try_into().unwrap(), w2t, b2: b2.try_into().unwrap(), w3: w3.try_into().unwrap(), b3: take(1)[0], scale }
     }
 
     pub fn eval(&self, x: &[f32; INPUTS]) -> f32 {
-        let mut h1 = [0.0f32; H1];
-        for (j, h) in h1.iter_mut().enumerate() {
-            *h = (self.b1[j] + dot(&self.w1[j * INPUTS..(j + 1) * INPUTS], x)).max(0.0);
+        let mut h1 = self.b1;
+        for (&v, w) in x.iter().zip(&self.w1t).filter(|(v, _)| **v != 0.0) {
+            for (h, w) in h1.iter_mut().zip(w) {
+                *h += v * w;
+            }
         }
-        let mut out = self.b3;
-        for j in 0..H2 {
-            out += self.w3[j] * (self.b2[j] + dot(&self.w2[j * H1..(j + 1) * H1], &h1)).max(0.0);
+        let mut h2 = self.b2;
+        for (&a, w) in h1.iter().zip(&self.w2t).filter(|(a, _)| **a > 0.0) {
+            for (h, w) in h2.iter_mut().zip(w) {
+                *h += a * w;
+            }
         }
+        let out = self.b3 + h2.iter().zip(&self.w3).map(|(h, w)| h.max(0.0) * w).sum::<f32>();
         out * self.scale
     }
-}
-
-/// Dot product with 8 independent running sums, so the compiler can use 8-wide vector math (a
-/// plain `.sum()` must add in order, which blocks that).
-fn dot(a: &[f32], b: &[f32]) -> f32 {
-    let mut acc = [0.0f32; 8];
-    let (ca, cb) = (a.chunks_exact(8), b.chunks_exact(8));
-    let tail: f32 = ca.remainder().iter().zip(cb.remainder()).map(|(x, y)| x * y).sum();
-    for (x, y) in ca.zip(cb) {
-        for k in 0..8 {
-            acc[k] += x[k] * y[k];
-        }
-    }
-    acc.iter().sum::<f32>() + tail
 }
 
 /// The embedded value net, or None until one has been trained (nets/value.bin is empty).
@@ -131,5 +127,21 @@ mod tests {
         }
         assert!(empty.is_finite() && high.is_finite());
         assert_ne!(empty, high);
+    }
+
+    /// The sparse eval gives what a plain dense forward pass gives.
+    #[test]
+    fn sparse_eval_matches_dense() {
+        let Some(net) = value_net() else { return };
+        let mut b = Board::default();
+        for y in 30..40 {
+            b.rows[y] = 0x3FF & !(1 << (y * 7 % 10)) & !(1 << (y % 3));
+        }
+        for x in [features(&Board::default(), false, -1, 0, false, false), features(&b, true, 3, 4, true, false)] {
+            let h1: Vec<f32> = (0..H1).map(|j| (net.b1[j] + (0..INPUTS).map(|i| net.w1t[i][j] * x[i]).sum::<f32>()).max(0.0)).collect();
+            let h2: Vec<f32> = (0..H2).map(|j| (net.b2[j] + (0..H1).map(|i| net.w2t[i][j] * h1[i]).sum::<f32>()).max(0.0)).collect();
+            let dense = (net.b3 + (0..H2).map(|j| net.w3[j] * h2[j]).sum::<f32>()) * net.scale;
+            assert!((net.eval(&x) - dense).abs() < 1e-4, "{} vs {dense}", net.eval(&x));
+        }
     }
 }

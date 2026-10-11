@@ -1,12 +1,13 @@
 //! Single-threaded thinking speed: level-10 versus bots (beam 16 as in self-play, and 64 as in
-//! play) on fixed seeds. `cargo run --release --example speed`
+//! play) on fixed seeds. `cargo run --release --example speed`; WIDTHS=64,128,256 to pick widths.
 use std::time::Instant;
 
 use tetris_ai::bot::{Config, Objective};
 use tetris_ai::versus::play_match;
 
 fn main() {
-    for width in [16, 64] {
+    let widths: Vec<usize> = std::env::var("WIDTHS").map_or(vec![16, 64], |v| v.split(',').map(|w| w.parse().unwrap()).collect());
+    for width in widths {
         let mut cfg = Config { width, ..Config::difficulty(10, Objective::Attack) };
         // NO_SETUPS=1 / NO_SPECULATE=1: measure what each feature costs.
         if std::env::var("NO_SETUPS").is_ok() {
@@ -14,6 +15,9 @@ fn main() {
         }
         if std::env::var("NO_SPECULATE").is_ok() {
             cfg.speculate = false;
+        }
+        if std::env::var("NO_NET").is_ok() {
+            cfg.use_net = false;
         }
         // NET_WEIGHT=w: level 10 with the value net blended in.
         if let Ok(w) = std::env::var("NET_WEIGHT") {

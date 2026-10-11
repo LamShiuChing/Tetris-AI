@@ -8,11 +8,16 @@ import { Match, clockText, type MatchConfig, type MatchResult, type Mode, type R
 import { Menus, PadKeys } from './ui';
 import { makeTextures } from './view';
 
-/** Everything in a match is laid out on a 1280x720 stage, scaled to fit the window. */
-const DESIGN = { w: 1280, h: 720 };
+/** `?video=<replay file>`: plays that replay in a vertical 9:16 layout for recording (render_video.py);
+ * add `&wide` for the 16:9 analysis layout (search stats, landing spots, planned line). */
+const PARAMS = new URLSearchParams(location.search);
+const VIDEO = PARAMS.get('video');
+const WIDE = PARAMS.has('wide');
+/** Everything in a match is laid out on a 1280x720 stage (816x1450 / 1600x900 in video mode), scaled to fit the window. */
+const DESIGN = VIDEO ? (WIDE ? { w: 1600, h: 900 } : { w: 816, h: 1450 }) : { w: 1280, h: 720 };
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-/** One line per bot, in level order (12 = Chainlord). */
+/** One line per bot, in level order (12 = Chainlord, 14 = Perfectionist). */
 const BLURBS = [
   'Brand new. Slow, never holds, makes lots of mistakes.',
   'Learning the basics. Still slow and messy.',
@@ -26,6 +31,8 @@ const BLURBS = [
   'Full strength, judged by a neural net.',
   "Titan's power, plays to show off: varied tricks and named setups.",
   "Titan's power, keeps back-to-back chains alive.",
+  "Titan's power, builds a 4-wide well and chains long combos.",
+  "Titan's power, keeps the stack low and hunts perfect clears.",
 ];
 
 const settings = loadSettings();
@@ -94,7 +101,8 @@ async function main() {
 
   const tex = makeTextures(app.renderer);
   const fx = new Fx(tex.dot);
-  const planner = new Planner();
+  // One worker per side, so two bots think at the same time instead of taking turns.
+  const planners = [new Planner(), new Planner()];
   const controls = new Controls();
   controls.handling = settings.handling;
   audio.setVolumes(settings.sfx, settings.music);
@@ -121,7 +129,7 @@ async function main() {
     fx.clear();
     match?.destroy({ children: true });
     last = cfg;
-    match = new Match(engine, tex, fx, planner, controls, cfg);
+    match = new Match(engine, tex, fx, planners, controls, cfg);
     controls.active = hasHuman();
     root.addChild(match);
     if (menus.visible) picked = document.activeElement as HTMLElement | null;
@@ -393,7 +401,24 @@ async function main() {
   });
 
   $('loading').classList.add('hidden');
+  if (VIDEO) return playVideo(VIDEO, start);
   menus.show();
+}
+
+/** Video mode: a title card, then the replay; the results screen (minus buttons) closes it. */
+async function playVideo(file: string, start: (cfg: MatchConfig) => void) {
+  document.body.classList.add('video');
+  if (WIDE) document.body.classList.add('wide');
+  const replay = (await (await fetch(`${import.meta.env.BASE_URL}replays/${encodeURIComponent(file)}`)).json()) as Replay;
+  const card = $('videoTitle');
+  const [a, b] = replay.names.map((n) => n.toUpperCase());
+  card.querySelector('.a')!.textContent = a;
+  card.querySelector('.b')!.textContent = b;
+  card.classList.remove('hidden');
+  setTimeout(() => {
+    card.classList.add('hidden');
+    start({ mode: 'replay', sides: [{ kind: 'replay' }, { kind: 'replay' }], showPlan: false, speed: 1, replay, vertical: !WIDE, analysis: WIDE });
+  }, 2500);
 }
 
 main().catch((err) => {

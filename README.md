@@ -58,6 +58,8 @@ use `target-cpu=native` and fat LTO (see `.cargo/config.toml`, `Cargo.toml`).
 | **Titan** (10) | full search + bag speculation + opener steering + value net |
 | **Trickster** | Titan's strength, showman style: rewards flashy, varied tricks and named setups inside the search |
 | **Chainlord** | Titan's strength, keeps back-to-back chains alive when it reasonably can |
+| **Renegade** | Titan's strength, combo specialist: builds a 4-wide well and chains single clears |
+| **Perfectionist** | Titan's strength, perfect-clear specialist: keeps the stack low and fillable |
 
 ## Measured results
 
@@ -72,13 +74,14 @@ All bot-vs-bot numbers are win rates from seat-swapped matches on the headless v
 | Versus weight tuning at beam 16 | 65.6% ± 4.8% at beam 16, but 46.9% ± 6.2% at Titan's beam 64 → not used |
 | Duplicate-state merging / beam 128 | 42.2% ± 6.2% / 54.7% ± 6.2% → off / not used |
 | B2B-break penalty as default | 40.6% ± 6.1% → only in Chainlord's personality |
-| **Value net (Titan) vs hand evaluation** | **65.0% ± 3.0%** over 256 matches on unseen seeds; 1.43x think time |
-| Trickster vs Titan | 60.4% ± 7.1%, 2.5x the named setups fired |
-| Chainlord vs Titan | 52.1% ± 7.2%, fewer B2B breaks (12.7 vs 15.3 a match) |
-| Titan vs Cold Clear 2 (100 ms/move, our rules) | 9–11 over two 10-match series (6–4, then 3–7): within noise, but Cold Clear sends far more in long matches |
+| **Value net (Titan) vs hand evaluation** | **73.2% ± 2.8%** over 256 matches on unseen seeds (round-5 net; the round-3 net it replaced: 62.9% ± 3.0% on the same seeds) |
+| Titan vs Cold Clear 2 (100 ms/move, our rules) | round-3 net: 9–11 over two 10-match series (6–4, then 3–7). Round-5 net: 3–7. Cold Clear sends far more in long matches |
+| Titan's beam width vs Cold Clear 2 (32 matches each, same seeds) | 64: 15–17 · **256 (~140 ms): 23–9** (shipped) · 512 (~250 ms): 25–7 · 512 vs Cold Clear at 200 ms: 22–10 |
+| Personalities vs Titan (16 matches, beam 64) | Trickster 62.5%, 1.1 named setups fired a match (Titan ~0.6) · Chainlord 50.0%, longest B2B chain 5.1 (Titan ~3.5–4) · Renegade 50.0%, longest combo 9.2 (Titan ~6) · Perfectionist 56.2%, 2.2 perfect clears a match (Titan ~0.7) |
 
 Think time for Titan: 81 → 27 ms/piece single-threaded after the movegen/eval optimizations
-(same moves), ~52 ms with the value net.
+(same moves), then 1.6–1.9x faster again (inline setup prefilter, sparse value-net eval, cached
+speculation placements). At the shipped beam 256: ~110 ms natively, ~190 ms in the browser.
 
 ## Tools (`examples/`)
 
@@ -90,7 +93,8 @@ Think time for Titan: 81 → 27 ms/piece single-threaded after the movegen/eval 
 | `bash train/loop.sh <round>` | one self-play improvement round: play, retrain, test |
 | `cargo run --release --example vs_coldclear -- [matches] [ms] [level]` | Titan vs Cold Clear 2 over the Tetris Bot Protocol; writes replays to `web/public/replays/` |
 | `cargo run --release --example tune_vs` / `tune` | cross-entropy weight tuning (versus / MonochromeRush) |
-| `cargo run --release --example speed` | single-threaded think time |
+| `cargo run --release --example speed` | single-threaded think time (`WIDTHS=64,256`) |
+| `python web/render_video.py <replay> <out.mp4> [--wide [max s]]` | frame-exact MP4 of a replay: 9:16, or 16:9 with live search analysis (see the script for setup) |
 | `bench`, `openers`, `spins`, `netprobe`, `netcheck` | other measurements and checks |
 
 Cold Clear 2 isn't included: clone and build it into `external/cold-clear-2`

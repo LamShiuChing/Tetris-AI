@@ -34,7 +34,19 @@ struct Shape {
 struct Index {
     shapes: Vec<Shape>,
     /// For each of the 1024 possible board bottom rows, the shapes that allow it.
-    by_bottom: Vec<Vec<usize>>,
+    by_bottom: Vec<Vec<Cand>>,
+}
+
+/// A shape's first checks, stored inline so most shapes are ruled out without reading `Shape`
+/// (that pointer chase was half the bot's thinking time): its top row, the columns it allows
+/// stacking above it in, and its second row from the bottom (context, fill).
+#[derive(Clone, Copy)]
+struct Cand {
+    shape: u32,
+    top: u8,
+    open: u16,
+    ctx1: u16,
+    fill1: u16,
 }
 
 fn mask(row: &str, mirror: bool, keep: impl Fn(u8) -> bool) -> u16 {
@@ -65,6 +77,13 @@ fn index() -> &'static Index {
                     .filter(|&i| {
                         let (c, f) = (*shapes[i].ctx.last().unwrap(), *shapes[i].fill.last().unwrap());
                         row & c == c && row & !(c | f) == 0
+                    })
+                    .map(|i| {
+                        let s = &shapes[i];
+                        let n = s.fill.len();
+                        // One-row shapes: any second row passes here (stage_progress checks it as "above").
+                        let (ctx1, fill1) = if n >= 2 { (s.ctx[n - 2], s.fill[n - 2]) } else { (0, 0x3FF) };
+                        Cand { shape: i as u32, top: (HEIGHT as usize - n) as u8, open: s.ctx[0] | s.fill[0], ctx1, fill1 }
                     })
                     .collect()
             })
@@ -99,11 +118,15 @@ pub fn best_stage(b: &Board, available: u8) -> (f32, Option<u32>) {
     for k in 0..HEIGHT as usize {
         above[k + 1] = above[k] | b.rows[k];
     }
-    let bottom = b.rows[HEIGHT as usize - 1];
+    let (bottom, second) = (b.rows[HEIGHT as usize - 1], b.rows[HEIGHT as usize - 2]);
     let mut best = (0.0, None);
-    for &i in &idx.by_bottom[bottom as usize] {
-        if let Some(p) = stage_progress(&idx.shapes[i], b, &above, available).filter(|&p| p > best.0) {
-            best = (p, Some(i as u32 / 2)); // shapes come in (normal, mirrored) pairs
+    for c in &idx.by_bottom[bottom as usize] {
+        // The same tests stage_progress starts with, on inline data.
+        if above[c.top as usize] & !c.open & 0x3FF != 0 || second & c.ctx1 != c.ctx1 || second & !(c.ctx1 | c.fill1) != 0 {
+            continue;
+        }
+        if let Some(p) = stage_progress(&idx.shapes[c.shape as usize], b, &above, available).filter(|&p| p > best.0) {
+            best = (p, Some(c.shape / 2)); // shapes come in (normal, mirrored) pairs
         }
     }
     best

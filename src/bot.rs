@@ -59,6 +59,20 @@ impl Weights {
     }
 }
 
+/// What a personality plays for beyond winning.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Specialty {
+    #[default]
+    Normal,
+    /// Builds a 4-wide well with tall walls and chains single clears into long combos: `step` per
+    /// combo step on top of the attack table, `depth` per row of well depth (capped).
+    Ren { step: f32, depth: f32 },
+    /// Keeps the stack low, flat and fillable, and goes for perfect clears: `bonus` on top of a
+    /// PC's attack, `high` per row of stack above 4, `region` per empty region of the PC area
+    /// whose size isn't a multiple of 4 (no piece mix can fill it).
+    PerfectClear { bonus: f32, high: f32, region: f32 },
+}
+
 /// What a clear is worth to the search.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Objective {
@@ -99,6 +113,7 @@ pub struct Config {
     /// (`trick` bits) it did recently: the trick style prefers something else, for variety.
     pub recent_stages: Vec<u32>,
     pub recent_tricks: u32,
+    pub specialty: Specialty,
     /// Keep only the best of beam nodes that reached the same state by different move orders,
     /// so the beam holds `width` distinct futures. Off: it measured 42.2% +/- 6.2% vs not merging
     /// (level 10, 64 matches), i.e. no gain.
@@ -107,7 +122,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { width: 64, depth: 6, weights: Weights::default(), objective: Objective::Points, noise: 0.0, salt: 0, sees_garbage: true, speculate: false, use_net: false, net_weight: 20.0, dedupe: false, trick_margin: 0.0, trick_bonus: 0.0, recent_stages: vec![], recent_tricks: 0 }
+        Config { width: 64, depth: 6, weights: Weights::default(), objective: Objective::Points, noise: 0.0, salt: 0, sees_garbage: true, speculate: false, use_net: false, net_weight: 20.0, dedupe: false, trick_margin: 0.0, trick_bonus: 0.0, recent_stages: vec![], recent_tricks: 0, specialty: Specialty::Normal }
     }
 }
 
@@ -115,6 +130,10 @@ impl Default for Config {
 pub const TRICKSTER: u32 = 11;
 /// Titan's strength, keeps the back-to-back chain alive whenever it reasonably can.
 pub const CHAINLORD: u32 = 12;
+/// Titan's strength, combo specialist (`Specialty::Ren`).
+pub const RENEGADE: u32 = 13;
+/// Titan's strength, perfect-clear specialist (`Specialty::PerfectClear`).
+pub const PERFECTIONIST: u32 = 14;
 
 /// Trick bits recorded along a line of play.
 pub mod trick {
@@ -151,7 +170,8 @@ impl Config {
             Objective::Points => Weights::default(),
         };
         let cfg = Config {
-            width: [1, 1, 1, 2, 4, 8, 16, 24, 48, 64][i],
+            // Level 10 at 256 beat Cold Clear 2 (100 ms/move) 23-9; at 64 it went 15-17 (32 matches each).
+            width: [1, 1, 1, 2, 4, 8, 16, 24, 48, 256][i],
             depth: [1, 1, 1, 2, 2, 3, 4, 5, 6, 6][i],
             noise: [14.0, 10.0, 7.0, 4.5, 3.0, 1.8, 1.0, 0.4, 0.15, 0.0][i],
             objective,
@@ -167,8 +187,8 @@ impl Config {
             salt: 0,
             sees_garbage: level >= 5,
             speculate: level >= 9,
-            // Verified for level 10 only: 65.0% +/- 3.0% vs the hand eval over 256 fresh matches,
-            // 1.43x think time (net from 3 self-play rounds, nets/value.bin).
+            // Verified for level 10 only: 73.2% +/- 2.8% vs the hand eval over 256 fresh matches
+            // (net from 5 self-play rounds, nets/value.bin = nets/gen6w.bin).
             use_net: level >= 10 && objective == Objective::Attack,
             net_weight: 20.0,
             dedupe: false,
@@ -176,14 +196,22 @@ impl Config {
             trick_bonus: 0.0,
             recent_stages: vec![],
             recent_tricks: 0,
+            specialty: Specialty::Normal,
         };
         // Named personalities at Titan's strength.
         match level {
-            // Bonus 4 measured 60.4% +/- 7.1% vs Titan with 2.5x the named-setup fires (1.04 vs 0.42 a match).
-            TRICKSTER => Config { trick_bonus: 4.0, weights: Weights { setup: cfg.weights.setup * 1.5, ..cfg.weights }, ..cfg },
-            // -3 / x2 measured 52.1% +/- 7.2% vs Titan while breaking B2B less (12.7 vs 15.3 a match);
-            // -5 lost 35.4%.
-            CHAINLORD => Config { weights: Weights { b2b: cfg.weights.b2b * 2.0, b2b_break: -3.0, ..cfg.weights }, ..cfg },
+            // Style settings: the strongest that kept roughly even with Titan (vs, 16 matches at beam 64;
+            // stronger ones lost more without more style).
+            // Bonus 10 / setups x3: 62.5% vs Titan, 1.1 named setups fired a match (Titan ~0.6).
+            TRICKSTER => Config { trick_bonus: 10.0, weights: Weights { setup: cfg.weights.setup * 3.0, ..cfg.weights }, ..cfg },
+            // B2B x4, -5 per break: 50.0% vs Titan, longest B2B chain 5.1 (Titan ~3.5-4), breaks 8 a match (Titan ~20).
+            CHAINLORD => Config { weights: Weights { b2b: cfg.weights.b2b * 4.0, b2b_break: -5.0, ..cfg.weights }, ..cfg },
+            // Combo play: T-spin shapes and setups only get in the way of a clean well. 50.0% vs Titan,
+            // longest combo 9.2 a match (Titan ~6).
+            RENEGADE => Config { specialty: Specialty::Ren { step: 2.0, depth: 5.0 }, weights: Weights { tsd: 0.0, tst: 0.0, setup: 0.0, well: 0.0, bumpiness: -0.25, ..cfg.weights }, ..cfg },
+            // Perfect clears: no T-spin shapes, wells or setups; height costs more. 56.2% vs Titan,
+            // 2.2 perfect clears a match (Titan ~0.7).
+            PERFECTIONIST => Config { specialty: Specialty::PerfectClear { bonus: 30.0, high: 3.0, region: 4.0 }, weights: Weights { tsd: 0.0, tst: 0.0, setup: 0.0, well: 0.0, b2b: 0.0, height: -0.3, ..cfg.weights }, ..cfg },
             _ => cfg,
         }
     }
@@ -224,17 +252,42 @@ struct Node {
     tricks: u32,
     /// Index of the root placement this line started with.
     first: usize,
+    /// The placement that made this node (piece, x, y, rot) and its parent's index in the layer
+    /// before, to read back the chosen line.
+    mv: (Piece, i8, i8, u8),
+    parent: u32,
 }
 
 /// The line the bot chose: the setup it's working on (if any) and the tricks it plans.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Plan {
     pub stage: Option<u32>,
     pub tricks: u32,
+    /// The planned placements (piece, x, y, rot), first = the move played, while they still sit
+    /// where they'd lock on today's board: up to and including the first that clears lines or
+    /// lets garbage rise.
+    pub line: Vec<(Piece, i8, i8, u8)>,
+    /// Positions scored for this move.
+    pub nodes: u32,
 }
 
-fn plan_of(n: &Node) -> Plan {
-    Plan { stage: (n.stage != NO_STAGE && n.progress > 0.0).then_some(n.stage), tricks: n.tricks }
+/// `history[k]` is the layer depth-k children point into (`history[0]` = the root).
+fn plan_of(n: &Node, history: &[Vec<Node>], nodes: u32) -> Plan {
+    let mut path = vec![*n];
+    for layer in history.iter().rev() {
+        path.push(layer[path.last().unwrap().parent as usize]);
+    }
+    path.reverse();
+    let mut line = vec![];
+    for w in path.windows(2) {
+        let (piece, x, y, rot) = w[1].mv;
+        line.push(w[1].mv);
+        let mut b = w[0].board;
+        if b.lock(piece, x, y, rot) > 0 || b != w[1].board {
+            break;
+        }
+    }
+    Plan { stage: (n.stage != NO_STAGE && n.progress > 0.0).then_some(n.stage), tricks: n.tricks, line, nodes }
 }
 
 pub fn suggest(root: &Root, rules: &Rules, cfg: &Config) -> Option<Placement> {
@@ -258,20 +311,24 @@ pub fn suggest_with_plan(root: &Root, rules: &Rules, cfg: &Config) -> Option<(Pl
         stage: NO_STAGE,
         tricks: 0,
         first: 0,
+        mv: (root.current, 0, 0, 0),
+        parent: 0,
     }];
     if tracks_setups(cfg) {
         let (p, stage) = setups::best_stage(&root.board, available(&seq, 0, root.hold));
         (layer[0].progress, layer[0].stage) = (p, stage.unwrap_or(NO_STAGE));
     }
     let mut best = None;
+    let (mut history, mut nodes) = (vec![], 0);
 
     for depth in 0..cfg.depth {
         let mut children = vec![];
-        for node in &layer {
+        for (i, node) in layer.iter().enumerate() {
             for (piece, hold, next) in options(node, &seq, depth > 0 || root.can_hold) {
                 let placements = if depth == 0 { find_placements(&node.board, piece, rules) } else { find_placements_fast(&node.board, piece, rules) };
                 for p in placements {
                     let Some(mut child) = play(node, &p, hold, next, &seq, rules, cfg) else { continue };
+                    child.parent = i as u32;
                     if depth == 0 {
                         first_moves.push(p);
                         child.first = first_moves.len() - 1;
@@ -283,6 +340,7 @@ pub fn suggest_with_plan(root: &Root, rules: &Rules, cfg: &Config) -> Option<(Pl
         if children.is_empty() {
             break;
         }
+        nodes += children.len() as u32;
         // ponytail: full sort per layer; select_nth_unstable if profiling says so.
         children.sort_unstable_by(|a, b| b.value.total_cmp(&a.value));
         if cfg.dedupe {
@@ -291,7 +349,7 @@ pub fn suggest_with_plan(root: &Root, rules: &Rules, cfg: &Config) -> Option<(Pl
         }
         children.truncate(cfg.width);
         best = Some(children[0].first);
-        layer = children;
+        history.push(std::mem::replace(&mut layer, children));
     }
 
     // One piece past the visible queue: unknown, but it is one of the pieces left in the bag, so
@@ -303,6 +361,8 @@ pub fn suggest_with_plan(root: &Root, rules: &Rules, cfg: &Config) -> Option<(Pl
         for node in spec.iter_mut().filter(|n| n.next >= seq.len()) {
             let possible: Vec<Piece> = Piece::ALL.into_iter().filter(|&p| root.bag & 1 << p as u8 != 0).collect();
             let mut total = 0.0;
+            // Placements per piece type on this board: the held piece's are needed for every guess.
+            let mut moves: [Option<Vec<Placement>>; 7] = Default::default();
             for &piece in &possible {
                 let mut choices = vec![(piece, node.hold)];
                 if let Some(h) = node.hold.filter(|&h| h != piece) {
@@ -310,8 +370,9 @@ pub fn suggest_with_plan(root: &Root, rules: &Rules, cfg: &Config) -> Option<(Pl
                 }
                 let mut best_here = DEATH;
                 for (play_piece, hold) in choices {
-                    for p in find_placements_fast(&node.board, play_piece, rules) {
-                        if let Some(c) = play(node, &p, hold, node.next + 1, &seq, rules, cfg) {
+                    for p in moves[play_piece as usize].get_or_insert_with(|| find_placements_fast(&node.board, play_piece, rules)).iter() {
+                        nodes += 1;
+                        if let Some(c) = play(node, p, hold, node.next + 1, &seq, rules, cfg) {
                             best_here = best_here.max(c.value);
                         }
                     }
@@ -321,10 +382,10 @@ pub fn suggest_with_plan(root: &Root, rules: &Rules, cfg: &Config) -> Option<(Pl
             node.value = total / possible.len() as f32;
         }
         let chosen = choose(&spec, cfg);
-        return chosen.map(|n| (first_moves.swap_remove(n.first), plan_of(&n)));
+        return chosen.map(|n| (first_moves.swap_remove(n.first), plan_of(&n, &history, nodes)));
     }
     best?; // no legal placement at all
-    choose(&layer, cfg).map(|n| (first_moves.swap_remove(n.first), plan_of(&n)))
+    choose(&layer, cfg).map(|n| (first_moves.swap_remove(n.first), plan_of(&n, &history, nodes)))
 }
 
 /// How many of the final beam's best lines get the extra speculated piece.
@@ -449,9 +510,23 @@ fn play(node: &Node, p: &Placement, hold: Option<Piece>, next: usize, seq: &[Pie
     if node.b2b && !b2b && lines > 0 {
         gain += cfg.weights.b2b_break;
     }
+    match cfg.specialty {
+        Specialty::Normal => {}
+        // Each further step of a running combo is worth more than the attack table says.
+        Specialty::Ren { step, .. } if lines > 0 => gain += step * combo.min(12) as f32,
+        // Dropping a running combo costs what keeping it would have earned.
+        Specialty::Ren { step, .. } => gain -= step * node.combo.clamp(0, 12) as f32,
+        Specialty::PerfectClear { bonus, .. } if lines > 0 && board.is_empty() => gain += bonus,
+        Specialty::PerfectClear { .. } => {}
+    }
     let reward = node.reward + gain;
     let slot = tslot(&board);
     let mut leaf = eval_with_slot(&board, b2b, &cfg.weights, slot) + cfg.weights.incoming * pending as f32;
+    leaf += match cfg.specialty {
+        Specialty::Normal => 0.0,
+        Specialty::Ren { depth, .. } => depth * ren_depth(&board) as f32,
+        Specialty::PerfectClear { high, region, .. } => pc_shape(&board, high, region),
+    };
     if let Some(n) = net::value_net().filter(|_| cfg.use_net) {
         let lines = slot.map(|s| s.3);
         leaf += cfg.net_weight * n.eval(&net::features(&board, b2b, combo, pending, lines == Some(2), lines == Some(3)));
@@ -460,7 +535,7 @@ fn play(node: &Node, p: &Placement, hold: Option<Piece>, next: usize, seq: &[Pie
     if cfg.noise > 0.0 {
         value += cfg.noise * jitter(&board, cfg.salt);
     }
-    Some(Node { board, hold, next, b2b, combo, pending, reward, value, progress, stage, tricks, first: node.first })
+    Some(Node { board, hold, next, b2b, combo, pending, reward, value, progress, stage, tricks, first: node.first, mv: (p.piece, p.x, p.y, p.rot), parent: 0 })
 }
 
 /// Identifies a search state regardless of how it was reached (FNV-1a over everything that
@@ -568,6 +643,57 @@ fn eval_with_slot(board: &Board, b2b: bool, w: &Weights, slot: Option<(i8, i8, u
         + w.b2b * b2b as u8 as f32
 }
 
+/// Ren well depth counted at most this deep.
+const REN_MAX_DEPTH: i32 = 10;
+
+fn column_heights(b: &Board) -> [i32; WIDTH as usize] {
+    let mut h = [0i32; WIDTH as usize];
+    for x in 0..WIDTH as usize {
+        h[x] = (0..HEIGHT as usize).find(|&y| b.rows[y] >> x & 1 != 0).map_or(0, |y| HEIGHT as i32 - y as i32);
+    }
+    h
+}
+
+/// How deep the best 4-wide well (columns 0-3, 3-6 or 6-9) sits below the walls around it.
+fn ren_depth(b: &Board) -> i32 {
+    let h = column_heights(b);
+    let depth = [0, 3, 6]
+        .into_iter()
+        .map(|k| {
+            let inner = h[k..k + 4].iter().max().unwrap();
+            let wall = (0..WIDTH as usize).filter(|x| !(k..k + 4).contains(x)).map(|x| h[x]).min().unwrap();
+            wall - inner
+        })
+        .max()
+        .unwrap();
+    depth.clamp(0, REN_MAX_DEPTH)
+}
+
+/// How ready the board is for a perfect clear of the bottom 2 or 4 rows: stack above that costs
+/// per row; otherwise each run of columns between columns already full to the top of the clear
+/// must have a multiple of 4 empty cells (assumes no holes; holes are punished anyway).
+fn pc_shape(b: &Board, high: f32, region: f32) -> f32 {
+    let h = column_heights(b);
+    let top = *h.iter().max().unwrap();
+    if top > 4 {
+        return -high * (top - 4) as f32;
+    }
+    let bad = |rows: i32| {
+        let (mut bad, mut run) = (0, 0);
+        for &c in h.iter().chain(std::iter::once(&rows)) {
+            if c >= rows {
+                bad += (run % 4 != 0) as i32;
+                run = 0;
+            } else {
+                run += rows - c;
+            }
+        }
+        bad
+    };
+    let best = if top <= 2 { bad(2).min(bad(4)) } else { bad(4) };
+    -region * best as f32
+}
+
 /// Lines the best ready T-spin slot would clear (2 = TSD, 3 = TST), for net features.
 pub fn tslot_kind(b: &Board) -> Option<u32> {
     tslot(b).map(|s| s.3)
@@ -656,6 +782,30 @@ pub fn play_game(cfg: &Config, seed: u64) -> GameStats {
 mod tests {
     use super::*;
 
+    /// Ren: a 4-wide well between tall walls scores by its depth; perfect clear: a low board
+    /// whose empty area splits into pieces of 4 cells is fine, an odd region or a tall stack isn't.
+    #[test]
+    fn specialty_shapes() {
+        let mut ren = Board::default();
+        for y in 32..40 {
+            ren.rows[y] = 0x3FF & !(0b1111 << 3); // columns 3-6 open, 8 rows of wall
+        }
+        assert_eq!(ren_depth(&ren), 8);
+        assert_eq!(ren_depth(&Board::default()), 0);
+
+        let mut pc = Board::default();
+        assert_eq!(pc_shape(&pc, 3.0, 4.0), 0.0);
+        pc.rows[39] = 0b1111_1111; // 8 cells: 12 empty in a 2-row clear, 32 in a 4-row one
+        assert_eq!(pc_shape(&pc, 3.0, 4.0), 0.0);
+        pc.rows[39] = 0b111; // 17 empty in a 2-row clear, 37 in a 4-row one: neither divides by 4
+        assert_eq!(pc_shape(&pc, 3.0, 4.0), -4.0);
+        let mut tall = Board::default();
+        for y in 34..40 {
+            tall.rows[y] = 1;
+        }
+        assert_eq!(pc_shape(&tall, 3.0, 4.0), -6.0);
+    }
+
     /// Trickster prefers a flashier line when it costs little; with the trick style off the bot
     /// takes the best-scoring line. Both still find the T-spin double when it's on offer.
     #[test]
@@ -669,7 +819,15 @@ mod tests {
             let (p, plan) = suggest_with_plan(&root, &Rules::versus(), &Config::difficulty(level, Objective::Attack)).unwrap();
             assert_eq!((p.piece, p.spin), (Piece::T, Spin::Full), "level {level}");
             assert!(plan.tricks & trick::TSD != 0, "level {level}: plan {plan:?}");
+            // The line starts with the move played and stops at the clear (the board shifts).
+            assert_eq!(plan.line, vec![(p.piece, p.x, p.y, p.rot)]);
         }
+        // On an empty board nothing clears for a while, so the line runs several pieces deep.
+        let queue = [Piece::I, Piece::O, Piece::S, Piece::Z, Piece::L];
+        let root = Root { board: Board::default(), current: Piece::J, hold: None, can_hold: true, queue: &queue, b2b: false, combo: -1, pending: 0, bag: 0 };
+        let (p, plan) = suggest_with_plan(&root, &Rules::versus(), &Config::difficulty(10, Objective::Attack)).unwrap();
+        assert_eq!(plan.line[0], (p.piece, p.x, p.y, p.rot));
+        assert!(plan.line.len() >= 3 && plan.nodes > 1000, "{plan:?}");
     }
 
     #[test]

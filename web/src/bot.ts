@@ -15,12 +15,14 @@ export const LEVELS = [
   { name: 'Expert', pps: 2.3, inputMs: 32, hold: true },
   { name: 'Legend', pps: 3.0, inputMs: 22, hold: true },
   { name: 'Titan', pps: 4.5, inputMs: 12, hold: true },
-  // Named personalities with Titan's strength (engine levels 11 and 12).
+  // Named personalities with Titan's strength (engine levels 11 to 14).
   { name: 'Trickster', pps: 4.5, inputMs: 12, hold: true },
   { name: 'Chainlord', pps: 4.5, inputMs: 12, hold: true },
+  { name: 'Renegade', pps: 4.5, inputMs: 12, hold: true },
+  { name: 'Perfectionist', pps: 4.5, inputMs: 12, hold: true },
 ];
 
-/** One worker shared by every bot; requests are matched to replies by id. */
+/** A bot-thinking worker (one per side); requests are matched to replies by id. */
 export class Planner {
   private worker = new Worker(new URL('./bot.worker.ts', import.meta.url), { type: 'module' });
   private waiting = new Map<number, (out: number[]) => void>();
@@ -95,6 +97,8 @@ export class Bot {
         continue;
       }
       this.player.input(a as Action);
+      // The plan already covers the piece hold swaps in: claim the after-hold key so it isn't replanned.
+      if (a === Action.Hold) this.plannedFor = snap.pieces * 2 + 1;
       if (a === Action.Hold || a === Action.Hard) return;
       this.wait += this.gap;
     }
@@ -105,6 +109,7 @@ export class Bot {
     this.plannedFor = key;
     this.target = null;
     const twentyG = physics.gravityMs < FAST_GRAVITY_MS;
+    const started = performance.now();
     const out = await this.planner.plan({
       rows: snap.rows,
       current: snap.piece,
@@ -121,6 +126,8 @@ export class Bot {
       bag: snap.bag,
     });
     this.thinking = false;
+    // Thinking is part of the piece's time budget, not added on top of it.
+    const thought = performance.now() - started;
     if (key !== this.plannedFor) return;
     if (out.length === 0) {
       this.actions = [Action.Hard];
@@ -130,10 +137,6 @@ export class Bot {
     const n = out[5];
     const stage = (out[6 + n] & 0xff) | ((out[7 + n] & 0xff) << 8);
     this.goal = stage === 0xffff ? null : stage;
-    if (piece !== snap.piece) {
-      this.actions = [Action.Hold]; // the next update replans for the swapped-in piece
-      return;
-    }
     this.target = { piece, x, y, rot };
     const inputs = out.slice(6, 6 + n).map((i) => (i === 4 ? SONIC : i));
     const { pps, inputMs } = LEVELS[this.level - 1];
@@ -146,12 +149,16 @@ export class Bot {
       const safe = physics.lockDelayMs * 0.4;
       const moves = inputs.length + 1;
       this.gap = Math.min(Math.max(inputMs, (1000 / pps) * 0.6 / moves), safe);
-      this.wait = Math.min(Math.max(0, 1000 / pps - moves * this.gap), safe);
+      this.wait = Math.min(Math.max(0, 1000 / pps - moves * this.gap - thought), safe);
     } else {
       // Spread the piece over 1/pps seconds: think first, then move.
       this.actions = [...inputs, Action.Hard];
       this.gap = inputMs;
-      this.wait = Math.max(0, 1000 / pps - inputs.length * inputMs);
+      this.wait = Math.max(0, 1000 / pps - inputs.length * inputMs - thought);
+    }
+    if (piece !== snap.piece) {
+      // The plan is for the piece hold swaps in (its inputs start from spawn): hold, then play it.
+      this.actions.unshift(Action.Hold);
     }
   }
 }

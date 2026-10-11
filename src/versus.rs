@@ -31,6 +31,11 @@ pub struct Style {
     pub pc: u32,
     /// T-spins that fired a named setup (repeats included).
     pub setup_fires: u32,
+    /// Longest combo (1 = two clears in a row, as the game counts it).
+    pub max_combo: u32,
+    /// Longest run of back-to-back-eligible clears (quads, T-spins) with no plain clear between.
+    pub max_b2b: u32,
+    chain: u32,
 }
 
 /// Per-side memory the trick style uses to avoid repeating itself.
@@ -144,6 +149,11 @@ pub fn play_brains(brains: [&mut dyn Brain; 2], seed: u64, max_pieces: u32, obse
                 match e {
                     Event::Lock { attack, sent, lines, spin, combo, perfect_clear, .. } => {
                         (raw, sent_now) = (raw + attack, sent_now + sent);
+                        style[i].max_combo = style[i].max_combo.max(combo.max(0) as u32);
+                        if lines > 0 {
+                            style[i].chain = if g.b2b { style[i].chain + 1 } else { 0 };
+                            style[i].max_b2b = style[i].max_b2b.max(style[i].chain);
+                        }
                         let done = performed(lines, spin, combo, perfect_clear, b2b_before && g.b2b);
                         style[i].tricks |= done;
                         style[i].tsd += (done & trick::TSD != 0) as u32;
