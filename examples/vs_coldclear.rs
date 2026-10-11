@@ -3,6 +3,8 @@
 //! garbage and simultaneous turns as every other versus test. Each match is saved as a replay
 //! the web app can play back.
 //! `cargo run --release --example vs_coldclear -- [matches] [cold clear ms per move] [titan level]`
+//! Env: NET_WEIGHT (Titan's value-net blend), SEED0 (first seed, default 77000), REPLAY_DIR
+//! (default web/public/replays — point evaluation runs elsewhere so they don't replace those).
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -177,11 +179,18 @@ fn main() {
     let level: u32 = args.get(3).map_or(10, |s| s.parse().unwrap());
     let titan_name = if level >= 10 { "Titan".to_string() } else { format!("Level {level}") };
     let mut cc = ColdClear::spawn(think);
-    let mut titan = BotBrain(Config::difficulty(level, Objective::Attack));
+    let mut titan_cfg = Config::difficulty(level, Objective::Attack);
+    if let Ok(w) = std::env::var("NET_WEIGHT") {
+        titan_cfg.net_weight = w.parse().unwrap();
+    }
+    let seed0: u64 = std::env::var("SEED0").map_or(77_000, |v| v.parse().unwrap());
+    let dir = std::env::var("REPLAY_DIR").unwrap_or_else(|_| "web/public/replays".into());
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut titan = BotBrain(titan_cfg);
     let (mut titan_wins, mut cc_wins, mut draws) = (0, 0, 0);
     let mut index = vec![];
     for m in 0..matches {
-        let seed = 77_000 + m;
+        let seed = seed0 + m;
         // Alternate seats; record each turn's moves for the replay.
         let titan_seat = (m % 2) as usize;
         let names = if titan_seat == 0 { [titan_name.clone(), "Cold Clear 2".into()] } else { ["Cold Clear 2".into(), titan_name.clone()] };
@@ -216,10 +225,10 @@ fn main() {
         );
         let file = format!("titan-vs-coldclear-{m}.json");
         let replay = json!({ "seed": seed, "names": names, "winner": winner, "turns": turns });
-        std::fs::write(format!("web/public/replays/{file}"), replay.to_string()).unwrap();
+        std::fs::write(format!("{dir}/{file}"), replay.to_string()).unwrap();
         index.push(json!({ "file": file, "names": names, "winner": winner, "pieces": r.pieces }));
     }
-    std::fs::write("web/public/replays/index.json", Value::Array(index).to_string()).unwrap();
+    std::fs::write(format!("{dir}/index.json"), Value::Array(index).to_string()).unwrap();
     println!(
         "\n{titan_name} {titan_wins} - {cc_wins} Cold Clear 2 ({draws} draws) over {matches} matches; Cold Clear thinks {} ms/move; unmatched Cold Clear moves: {}",
         think.as_millis(),

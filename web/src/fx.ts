@@ -23,6 +23,19 @@ const easeOutCubic = (p: number) => 1 - (1 - p) ** 3;
 
 export const FONT = '"Baloo 2", "Arial Rounded MT Bold", system-ui, sans-serif';
 
+/** The stage is 1280x720 scaled to the window; text and generated textures render at this
+ * resolution so they stay sharp when that scale is above 1 (set by main on resize). */
+let uiScale = 1;
+
+/** Reduce-motion setting: fewer particles, no screen shake or board bump. */
+export const motion = { reduced: false };
+export function setUiScale(k: number) {
+  uiScale = k;
+}
+export function textResolution() {
+  return Math.min(devicePixelRatio, 2) * Math.max(1, uiScale);
+}
+
 export class Fx {
   private tweens: Tween[] = [];
   private particles: Particle[] = [];
@@ -56,11 +69,20 @@ export class Fx {
     this.particles = this.particles.filter((p) => p.life > 0);
   }
 
+  /** Forget every running effect. Call before destroying the match they draw into: their
+   * sprites die with it, and touching a destroyed sprite would throw inside the render loop
+   * (which stops it for good). Also drops pending orb callbacks so they can't hit a new match. */
+  clear() {
+    this.tweens = [];
+    this.particles = [];
+  }
+
   tween(dur: number, step: (p: number) => void, done?: () => void, delay = 0) {
     this.tweens.push({ t: 0, dur, delay, step, done });
   }
 
   burst(layer: Container, x: number, y: number, color: number, n: number, power = 260, o: { up?: number; size?: number; life?: number } = {}) {
+    if (motion.reduced) n = Math.ceil(n / 4);
     for (let i = 0; i < n; i++) {
       const s = new Sprite(this.dot);
       s.anchor.set(0.5);
@@ -77,9 +99,10 @@ export class Fx {
   }
 
   /** Big bouncy label: pops in with overshoot, hangs, then floats up and fades. */
-  popup(layer: Container, text: string, x: number, y: number, o: { size?: number; color?: number; delay?: number; hold?: number } = {}): Text {
+  popup(layer: Container, text: string, x: number, y: number, o: { size?: number; color?: number; delay?: number; hold?: number; maxWidth?: number } = {}): Text {
     const t = new Text({
       text,
+      resolution: textResolution(),
       style: {
         fontFamily: FONT,
         fontWeight: '800',
@@ -92,10 +115,11 @@ export class Fx {
     });
     t.anchor.set(0.5);
     t.position.set(x, y);
+    const fit = o.maxWidth ? Math.min(1, o.maxWidth / t.width) : 1;
     t.scale.set(0);
     layer.addChild(t);
     const hold = o.hold ?? 700;
-    this.tween(220, (p) => t.scale.set(easeOutBack(p)), undefined, o.delay ?? 0);
+    this.tween(220, (p) => t.scale.set(fit * easeOutBack(p)), undefined, o.delay ?? 0);
     this.tween(
       450,
       (p) => {

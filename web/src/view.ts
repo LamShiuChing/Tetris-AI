@@ -2,7 +2,7 @@
 // spring-based bump/shake. Coordinates: board origin (0, 0) is the top-left of the visible 10x20.
 import { Container, Graphics, Sprite, Text, type Renderer, type Texture } from 'pixi.js';
 import { pieceCells, type Exports, type Snapshot } from './engine';
-import { FONT } from './fx';
+import { FONT, motion, textResolution } from './fx';
 
 export const CELL = 28;
 export const W = 10 * CELL;
@@ -39,11 +39,12 @@ export function makeTextures(renderer: Renderer): Textures {
       .fill({ color: 0xffffff, alpha: 0.32 })
       .circle(CELL * 0.27, CELL * 0.27, 2.4)
       .fill({ color: 0xffffff, alpha: 0.9 });
-    return renderer.generateTexture(g);
+    return renderer.generateTexture({ target: g, resolution: 3 });
   };
-  const outline = renderer.generateTexture(
-    new Graphics().roundRect(1.5, 1.5, CELL - 3, CELL - 3, 6).fill({ color: 0xffffff, alpha: 0.12 }).stroke({ width: 2.5, color: 0xffffff }),
-  );
+  const outline = renderer.generateTexture({
+    target: new Graphics().roundRect(1.5, 1.5, CELL - 3, CELL - 3, 6).fill({ color: 0xffffff, alpha: 0.12 }).stroke({ width: 2.5, color: 0xffffff }),
+    resolution: 3,
+  });
   const dot = renderer.generateTexture(
     new Graphics().circle(16, 16, 16).fill({ color: 0xffffff, alpha: 0.25 }).circle(16, 16, 9).fill({ color: 0xffffff, alpha: 0.6 }).circle(16, 16, 4).fill(0xffffff),
   );
@@ -53,6 +54,7 @@ export function makeTextures(renderer: Renderer): Textures {
 function label(text: string, size: number, color = 0xffffff) {
   const t = new Text({
     text,
+    resolution: textResolution(),
     style: { fontFamily: FONT, fontWeight: '800', fontSize: size, fill: color, stroke: { color: 0x1a1036, width: 5, join: 'round' }, letterSpacing: 2 },
   });
   return t;
@@ -159,11 +161,11 @@ export class BoardView extends Container {
   }
 
   kick(v: number) {
-    this.bumpV += v;
+    if (!motion.reduced) this.bumpV += v;
   }
 
   shake(amp: number) {
-    this.shakeAmp = Math.max(this.shakeAmp, amp);
+    if (!motion.reduced) this.shakeAmp = Math.max(this.shakeAmp, amp);
   }
 
   update(dtMs: number) {

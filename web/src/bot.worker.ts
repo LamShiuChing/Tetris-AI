@@ -34,11 +34,17 @@ const engine = loadEngine();
 const ctx = self as unknown as Worker;
 
 ctx.onmessage = async (e: MessageEvent<PlanRequest>) => {
-  const w = await engine;
   const r = e.data;
+  try {
+    ctx.postMessage({ id: r.id, out: plan(await engine, r) } satisfies PlanResponse);
+  } catch {
+    ctx.postMessage({ id: r.id, out: [] } satisfies PlanResponse); // the bot hard-drops instead of hanging
+  }
+};
+
+function plan(w: Awaited<typeof engine>, r: PlanRequest): number[] {
   new Uint16Array(w.memory.buffer, w.board_ptr(), 40).set(r.rows);
   new Uint8Array(w.memory.buffer, w.queue_ptr(), r.queue.length).set(r.queue);
   const len = w.plan(r.current, r.hold < 0 ? 7 : r.hold, r.canHold ? 1 : 0, r.queue.length, r.b2b ? 1 : 0, r.combo, r.difficulty, r.salt, (r.twentyG ? 1 : 0) | (r.solo ? 2 : 0), r.pending, r.bag);
-  const out = Array.from(new Int8Array(w.memory.buffer, w.out_ptr(), len));
-  ctx.postMessage({ id: r.id, out } satisfies PlanResponse);
-};
+  return Array.from(new Int8Array(w.memory.buffer, w.out_ptr(), len));
+}

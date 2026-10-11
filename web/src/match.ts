@@ -4,7 +4,7 @@ import { Container, Text } from 'pixi.js';
 import { audio } from './audio';
 import { Bot, LEVELS, type Physics, type Planner } from './bot';
 import { Action, Player, pieceCells, setupName, type Exports, type GameEvent, type Snapshot } from './engine';
-import { FONT, type Fx } from './fx';
+import { FONT, textResolution, type Fx } from './fx';
 import type { Controls } from './input';
 import { BoardView, CELL, COLORS, GARBAGE, H, W, type Textures } from './view';
 
@@ -58,14 +58,35 @@ const COUNTDOWN = 3000;
 const SPIN_NAMES = ['', 'SINGLE', 'DOUBLE', 'TRIPLE'];
 const CLEAR_NAMES = ['', 'SINGLE', 'DOUBLE', 'TRIPLE', 'QUAD'];
 
+/** End-of-match numbers for one side, for the results screen. */
+export interface SideStats {
+  name: string;
+  pieces: number;
+  pps: number;
+  apm: number;
+  sent: number;
+  lines: number;
+  maxCombo: number;
+  tspins: number;
+  quads: number;
+  pcs: number;
+  score: number;
+}
+
 export interface MatchResult {
   winner: number;
   title: string;
   detail: string;
+  mode: Mode;
+  /** Index of the human side, or -1. */
+  human: number;
+  seconds: number;
+  stats: SideStats[];
 }
 
 export class Match extends Container {
   onEnd: (r: MatchResult) => void = () => {};
+  private endTimer = 0;
   private rules: ModeRules;
   private players: Player[];
   private views: BoardView[];
@@ -85,6 +106,12 @@ export class Match extends Container {
   private turnAttack = [0, 0];
   /** Per board, the callouts for the latest clear; a new clear hides them so they never pile up. */
   private callouts: Text[][] = [[], []];
+  /** Per side: biggest combo, T-spin clears, quads and perfect clears so far. */
+  private extra = [0, 1].map(() => ({ maxCombo: 0, tspins: 0, quads: 0, pcs: 0 }));
+  private names: string[] = [];
+  /** Solo side panel: mode, score, level, lines, time. */
+  private hud: Text[] = [];
+  paused = false;
 
   constructor(
     private engine: Exports,
@@ -113,6 +140,7 @@ export class Match extends Container {
             : side.level > 10
               ? LEVELS[side.level - 1].name.toUpperCase() // named personality
               : `${LEVELS[side.level - 1].name.toUpperCase()} · LV ${side.level}`;
+      this.names[i] = name;
       const v = new BoardView(engine, tex, name, i === 0 ? 0x5fd3ff : 0xff5fa2);
       v.position.set(xs[i], BOARD_Y);
       this.addChild(v);
@@ -123,21 +151,51 @@ export class Match extends Container {
     this.physics = this.players.map(() => ({ gravityMs: this.rules.gravityMs(1, 0), lockDelayMs: this.rules.lockDelayMs(1), solo }));
 
     const style = { fontFamily: FONT, fontWeight: '800' as const, fill: 0xffffff, stroke: { color: 0x1a1036, width: 8 } };
-    const heading = new Text({ text: solo ? this.rules.title : 'VS', style: { ...style, fontSize: solo ? 30 : 44, fill: solo ? 0xffd93d : 0xffffff } });
-    heading.anchor.set(0.5);
-    heading.position.set(solo ? 640 : 640, solo ? 40 : BOARD_Y + H / 2);
-    this.clock = new Text({ text: '0:00', style: { ...style, fontSize: 26, fill: 0xcfc6ff, stroke: { color: 0x1a1036, width: 6 } } });
-    this.clock.anchor.set(0.5);
-    this.clock.position.set(solo ? 1000 : 640, solo ? 120 : 40);
-    this.banner = new Text({ text: '', style: { ...style, fontSize: 120, stroke: { color: 0x1a1036, width: 16 }, dropShadow: { color: 0x000000, alpha: 0.5, distance: 8, blur: 4, angle: Math.PI / 2 } } });
+    const text = (t: string, size: number, fill: number, x: number, y: number, ax = 0.5) => {
+      const o = new Text({ text: t, resolution: textResolution(), style: { ...style, fontSize: size, fill, stroke: { color: 0x1a1036, width: Math.max(4, size / 5) } } });
+      o.anchor.set(ax, 0.5);
+      o.position.set(x, y);
+      this.addChild(o);
+      return o;
+    };
+    if (solo) {
+      // Side panel right of the NEXT box, clear of the spawning piece.
+      const x = 930;
+      text(this.rules.title, 34, 0xffd93d, x, BOARD_Y + 14, 0);
+      text('SCORE', 16, 0xcfc6ff, x, BOARD_Y + 70, 0);
+      text('LEVEL', 16, 0xcfc6ff, x, BOARD_Y + 150, 0);
+      text('LINES', 16, 0xcfc6ff, x, BOARD_Y + 220, 0);
+      text('TIME', 16, 0xcfc6ff, x, BOARD_Y + 290, 0);
+      this.hud = [102, 182, 252, 322].map((dy) => text('', 30, 0xffffff, x, BOARD_Y + dy, 0));
+      this.clock = this.hud[3];
+    } else {
+      text('VS', 44, 0xffffff, 640, BOARD_Y + H / 2);
+      this.clock = text('0:00', 26, 0xcfc6ff, 640, 40);
+    }
+    this.banner = new Text({ text: '', resolution: textResolution(), style: { ...style, fontSize: 120, stroke: { color: 0x1a1036, width: 16 }, dropShadow: { color: 0x000000, alpha: 0.5, distance: 8, blur: 4, angle: Math.PI / 2 } } });
     this.banner.anchor.set(0.5);
     this.banner.position.set(640, 360);
-    this.addChild(heading, this.clock, this.top, this.banner);
+    this.addChild(this.top, this.banner);
     controls.reset();
     this.views.forEach((v, i) => v.render(this.snaps[i], null, this.statsText(i)));
   }
 
+  /** Freeze the match (pause menu, window lost focus). */
+  setPaused(paused: boolean) {
+    if (this.paused === paused || this.state === 'over') return;
+    this.paused = paused;
+    if (paused) audio.stopMusic();
+    else if (this.state === 'playing') audio.startMusic();
+    this.controls.reset();
+  }
+
+  /** The results screen covers the canvas; drop the big banner so it doesn't show through. */
+  hideBanner() {
+    this.banner.visible = false;
+  }
+
   update(realDtMs: number) {
+    if (this.paused) return;
     const dt = realDtMs * this.cfg.speed;
     this.views.forEach((v) => v.update(dt));
     this.t += dt;
@@ -159,13 +217,19 @@ export class Match extends Container {
           this.banner.alpha = 1;
         });
         audio.startMusic();
+        this.controls.reset(); // drop keys pressed during the countdown
       }
       return;
     }
     if (this.state === 'over') return;
 
-    const seconds = Math.floor(this.t / 1000);
-    this.clock.text = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+    this.clock.text = clockText(this.t);
+    if (this.hud.length) {
+      const s = this.snaps[0];
+      this.hud[0].text = s.score.toLocaleString();
+      this.hud[1].text = String(this.level(0));
+      this.hud[2].text = `${Math.min(s.lines, this.rules.goal)} / ${this.rules.goal}`;
+    }
 
     for (let i = 0; i < this.players.length; i++) {
       const p = this.players[i];
@@ -208,10 +272,7 @@ export class Match extends Container {
       else if (s.lines >= this.rules.goal) this.finish(0);
     } else {
       const dead = this.snaps.map((s) => s.over);
-      if (dead.some(Boolean)) {
-        if (this.cfg.replay) console.info(`replay: K.O. on turn ${this.replayTurn} of ${this.cfg.replay.turns.length}`);
-        this.finish(dead[0] && dead[1] ? -1 : dead[0] ? 1 : 0);
-      }
+      if (dead.some(Boolean)) this.finish(dead[0] && dead[1] ? -1 : dead[0] ? 1 : 0);
     }
   }
 
@@ -221,11 +282,9 @@ export class Match extends Container {
 
   private statsText(i: number) {
     const s = this.snaps[i];
-    if (!this.rules.goal) {
-      const pps = s.pieces / Math.max(this.t / 1000, 1);
-      return `SENT ${s.sent}  ·  LINES ${s.lines}  ·  ${pps.toFixed(2)} PPS`;
-    }
-    return `LV ${this.level(i)}  ·  LINES ${Math.min(s.lines, this.rules.goal)}/${this.rules.goal}  ·  ${s.score.toLocaleString()}`;
+    const pps = s.pieces / Math.max(this.t / 1000, 1);
+    if (!this.rules.goal) return `SENT ${s.sent}  ·  LINES ${s.lines}  ·  ${pps.toFixed(2)} PPS`;
+    return `${pps.toFixed(2)} PIECES / SEC`;
   }
 
   private pan(i: number) {
@@ -281,7 +340,8 @@ export class Match extends Container {
     if (e.lines === 0) {
       if (e.spin) {
         audio.spinNoClear(pan);
-        this.fx.popup(v.fx, e.spin === 2 ? 'T-SPIN' : 'MINI T-SPIN', W / 2, H * 0.35, { size: 30, color });
+        this.callouts[i].forEach((t) => (t.visible = false));
+        this.callouts[i] = [this.fx.popup(v.fx, e.spin === 2 ? 'T-SPIN' : 'MINI T-SPIN', W / 2, H * 0.35, { size: 30, color })];
       } else {
         audio.lock(pan);
       }
@@ -299,11 +359,16 @@ export class Match extends Container {
       }
     }
 
+    const ex = this.extra[i];
+    ex.maxCombo = Math.max(ex.maxCombo, e.combo);
+    ex.tspins += e.spin === 2 ? 1 : 0;
+    ex.quads += e.lines === 4 ? 1 : 0;
+    ex.pcs += e.pc ? 1 : 0;
     const center = cells.reduce((a, c) => ({ x: a.x + c.x / 4, y: a.y + c.y / 4 }), { x: 0, y: 0 });
     const big = e.lines >= 4 || e.spin === 2 || e.pc;
     const name = e.spin === 2 ? `T-SPIN ${SPIN_NAMES[e.lines]}` : e.spin === 1 ? `MINI T-SPIN ${SPIN_NAMES[e.lines]}` : CLEAR_NAMES[e.lines];
     const callouts: Text[] = [];
-    if (e.lines >= 2 || e.spin) callouts.push(this.fx.popup(v.fx, name, W / 2, H * 0.35, { size: big ? 40 : 30, color: e.spin ? 0xff8ce0 : e.lines >= 4 ? 0xffe066 : 0xffffff }));
+    if (e.lines >= 2 || e.spin) callouts.push(this.fx.popup(v.fx, name, W / 2, H * 0.35, { size: big ? 40 : 30, color: e.spin ? 0xff8ce0 : e.lines >= 4 ? 0xffe066 : 0xffffff, maxWidth: W - 12 }));
     if (e.b2b) callouts.push(this.fx.popup(v.fx, 'BACK-TO-BACK', W / 2, H * 0.35 - 44, { size: 20, color: 0x9ff7ff, delay: 80 }));
     if (e.combo >= 1) callouts.push(this.fx.popup(v.fx, `${e.combo} REN`, W / 2, H * 0.35 + 46, { size: 24 + Math.min(e.combo, 10) * 2, color: 0xffb347, delay: 60 }));
     if (callouts.length) {
@@ -316,7 +381,7 @@ export class Match extends Container {
       v.shake(e.pc ? 14 : 8);
     }
     if (e.pc) {
-      this.fx.popup(v.fx, 'PERFECT CLEAR', W / 2, H * 0.55, { size: 46, color: 0x7dffb2, hold: 1200 });
+      this.fx.popup(v.fx, 'PERFECT CLEAR', W / 2, H * 0.55, { size: 46, color: 0x7dffb2, hold: 1200, maxWidth: W - 12 });
       for (let k = 0; k < 6; k++) this.fx.burst(v.fx, Math.random() * W, Math.random() * H, COLORS[k], 20, 380);
     }
 
@@ -337,6 +402,11 @@ export class Match extends Container {
     }
   }
 
+  override destroy(options?: Parameters<Container['destroy']>[0]) {
+    clearTimeout(this.endTimer);
+    super.destroy(options);
+  }
+
   /** Lockstep playback: both sides play turn t's recorded inputs, then each receives what the other
    * sent, then turn t+1 — the same order the referee used, so the engine reproduces the match. */
   private playReplay(dt: number) {
@@ -353,7 +423,6 @@ export class Match extends Container {
         if (!turn) {
           // The recorded match ended in a K.O. before this, so getting here means the engine
           // didn't reproduce it (or the match went the distance); fall back to the recorded winner.
-          console.warn(`replay: no K.O. after all ${replay.turns.length} turns; using the recorded winner`);
           const w = replay.names.findIndex((n) => n === replay.winner);
           this.finish(w);
           return;
@@ -414,6 +483,23 @@ export class Match extends Container {
     } else {
       this.views.forEach((v) => (v.shake(18), this.fx.tween(900, (p) => (v.alpha = 1 - 0.6 * p))));
     }
-    setTimeout(() => this.onEnd({ winner, title, detail }), 1800);
+    const minutes = Math.max(this.t / 60000, 1 / 60);
+    const stats: SideStats[] = this.snaps.map((s, i) => ({
+      name: this.names[i],
+      pieces: s.pieces,
+      pps: s.pieces / (minutes * 60),
+      apm: s.sent / minutes,
+      sent: s.sent,
+      lines: s.lines,
+      ...this.extra[i],
+      score: s.score,
+    }));
+    const mode = this.cfg.mode;
+    this.endTimer = window.setTimeout(() => this.onEnd({ winner, title, detail, mode, human: humanIdx, seconds: this.t / 1000, stats }), 1800);
   }
+}
+
+export function clockText(ms: number) {
+  const seconds = Math.floor(ms / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }

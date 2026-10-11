@@ -5,7 +5,8 @@
   "scripts": {
     "wasm": "cargo build --release --target wasm32-unknown-unknown --manifest-path ../Cargo.toml && node -e \"require('fs').copyFileSync('../target/wasm32-unknown-unknown/release/tetris_ai.wasm', 'public/engine.wasm')\"",
     "dev": "vite",
-    "build": "npm run wasm && vite build"
+    "build": "vite build",
+    "build:all": "npm run wasm && vite build"
   },
   "dependencies": {
     "pixi.js": "^8.22.0"

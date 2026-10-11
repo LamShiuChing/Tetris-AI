@@ -12,7 +12,7 @@ export const LEVELS = [
   { name: 'Ace', pps: 1.1, inputMs: 85, hold: true },
   { name: 'Hotshot', pps: 1.4, inputMs: 65, hold: true },
   { name: 'Veteran', pps: 1.8, inputMs: 45, hold: true },
-  { name: 'Master', pps: 2.3, inputMs: 32, hold: true },
+  { name: 'Expert', pps: 2.3, inputMs: 32, hold: true },
   { name: 'Legend', pps: 3.0, inputMs: 22, hold: true },
   { name: 'Titan', pps: 4.5, inputMs: 12, hold: true },
   // Named personalities with Titan's strength (engine levels 11 and 12).
@@ -30,6 +30,11 @@ export class Planner {
     this.worker.onmessage = (e: MessageEvent<PlanResponse>) => {
       this.waiting.get(e.data.id)?.(e.data.out);
       this.waiting.delete(e.data.id);
+    };
+    // If the worker dies, answer everything with "no plan" (the bot hard-drops) rather than hang.
+    this.worker.onerror = () => {
+      for (const resolve of this.waiting.values()) resolve([]);
+      this.waiting.clear();
     };
   }
 
@@ -133,11 +138,15 @@ export class Bot {
     const inputs = out.slice(6, 6 + n).map((i) => (i === 4 ? SONIC : i));
     const { pps, inputMs } = LEVELS[this.level - 1];
     if (twentyG) {
-      // The piece is already on the stack and lock delay is running: no thinking pause, and
-      // keep every gap well inside the lock delay. Sonic drops make fast gravity act like 20G.
+      // The piece is already on the stack and lock delay is running, so every pause must stay
+      // well inside it (each move on the ground restarts the delay). Within that, spread the
+      // piece over 1/pps like at low gravity, so the bot doesn't suddenly play flat out once
+      // gravity gets fast. Sonic drops make fast gravity act like 20G.
       this.actions = [SONIC, ...inputs.flatMap((i) => [i, SONIC]), Action.Hard];
-      this.gap = Math.min(inputMs, physics.lockDelayMs * 0.4);
-      this.wait = 0;
+      const safe = physics.lockDelayMs * 0.4;
+      const moves = inputs.length + 1;
+      this.gap = Math.min(Math.max(inputMs, (1000 / pps) * 0.6 / moves), safe);
+      this.wait = Math.min(Math.max(0, 1000 / pps - moves * this.gap), safe);
     } else {
       // Spread the piece over 1/pps seconds: think first, then move.
       this.actions = [...inputs, Action.Hard];

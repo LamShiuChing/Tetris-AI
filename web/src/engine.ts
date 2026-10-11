@@ -1,7 +1,5 @@
 // Thin wrapper over the Rust engine's raw WebAssembly exports. Layouts are documented in src/wasm.rs.
 
-export const PIECES = 'IJLOSTZ';
-
 export interface Exports {
   memory: WebAssembly.Memory;
   live_new(slot: number, seed: number, gravityMs: number, lockDelayMs: number): void;
@@ -25,7 +23,9 @@ export interface Exports {
 }
 
 export async function loadEngine(): Promise<Exports> {
-  const bytes = await (await fetch('/engine.wasm')).arrayBuffer();
+  const res = await fetch(`${import.meta.env.BASE_URL}engine.wasm`);
+  if (!res.ok) throw new Error(`engine.wasm: HTTP ${res.status}`);
+  const bytes = await res.arrayBuffer();
   const { instance } = await WebAssembly.instantiate(bytes);
   return instance.exports as unknown as Exports;
 }

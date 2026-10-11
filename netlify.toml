@@ -1,0 +1,7 @@
+# Stackfall on Netlify: a static site. The bot is engine.wasm (committed in web/public),
+# running in the player's browser, so no server or Rust toolchain is needed to deploy.
+# Rebuild it locally with `npm run wasm` in web/ after changing the Rust engine.
+[build]
+  base = "web"
+  command = "npm run build"
+  publish = "dist"

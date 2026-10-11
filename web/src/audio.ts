@@ -192,6 +192,8 @@ class Audio {
       [53, 57, 60],
     ];
     const melody = [76, 79, 81, 79, 76, 74, 72, 74, 74, 76, 79, 76, 74, 72, 71, 67, 72, 76, 79, 81, 84, 81, 79, 76, 77, 76, 74, 72, 74, 72, 71, 72];
+    // Background tabs throttle timers to ~1/s; skip beats we missed instead of playing them all at once.
+    if (this.nextBeat < ctx.currentTime) this.nextBeat = ctx.currentTime + 0.05;
     while (this.nextBeat < ctx.currentTime + 0.12) {
       const delay = this.nextBeat - ctx.currentTime;
       const b = this.beat;

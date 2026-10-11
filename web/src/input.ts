@@ -43,6 +43,8 @@ const PAD: [number, Key][] = [
 
 export class Controls {
   handling: Handling = { ...DEFAULT_HANDLING };
+  /** Set while a match is on screen; menus keep their normal keyboard behaviour otherwise. */
+  active = false;
   private keyboard = new Set<Key>();
   private pad = new Set<Key>();
   private pressed: Key[] = [];
@@ -54,7 +56,7 @@ export class Controls {
   constructor() {
     addEventListener('keydown', (e) => {
       const k = KEYS[e.code];
-      if (!k) return;
+      if (!k || !this.active) return;
       e.preventDefault();
       if (!e.repeat && !this.keyboard.has(k)) this.press(k);
       this.keyboard.add(k);

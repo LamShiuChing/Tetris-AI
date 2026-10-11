@@ -3,61 +3,150 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Stackfall — block-stacking duels against a bot</title>
+    <meta name="description" content="Stackfall: a juicy block-stacking duel game against bots that think. Free, in your browser." />
+    <title>Stackfall — block-stacking duels against bots</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect x=%221%22 y=%221%22 width=%226%22 height=%226%22 rx=%221.5%22 fill=%22%23ff5fa2%22/%3E%3Crect x=%229%22 y=%221%22 width=%226%22 height=%226%22 rx=%221.5%22 fill=%22%235fd3ff%22/%3E%3Crect x=%229%22 y=%229%22 width=%226%22 height=%226%22 rx=%221.5%22 fill=%22%23ffd93d%22/%3E%3C/svg%3E" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;800&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <div class="blobs"><i></i><i></i><i></i><i></i></div>
     <div id="stage"></div>
 
-    <div id="menu" class="overlay">
-      <h1 class="logo">STACK<span>FALL</span></h1>
-      <p class="tag">a block-stacking duel against a bot that thinks</p>
-      <div class="cards">
-        <section class="card">
-          <button id="vs" class="big">VS BOT</button>
-          <label>Opponent <input type="range" id="vsLevel" min="1" max="12" value="4" /> <b id="vsLevelName"></b></label>
-        </section>
-        <section class="card">
-          <button id="solo" class="big pink">SOLO</button>
-          <label>Mode <select id="soloMode"><option value="marathon">Marathon · 150 lines</option><option value="master">Master · 20G · 300 lines</option></select> <b></b></label>
-          <label>Player <input type="range" id="soloWho" min="0" max="10" value="0" /> <b id="soloWhoName"></b></label>
-        </section>
-        <section class="card">
-          <button id="watch" class="big alt">WATCH BOTS</button>
-          <label>Left <input type="range" id="wLeft" min="1" max="12" value="10" /> <b id="wLeftName"></b></label>
-          <label>Right <input type="range" id="wRight" min="1" max="12" value="11" /> <b id="wRightName"></b></label>
+    <!-- Menus: one screen visible at a time; arrows / D-pad move, Enter / A select, Esc / B back. -->
+    <div id="ui">
+      <section id="scr-title" class="screen">
+        <h1 class="logo">STACK<span>FALL</span></h1>
+        <p class="tag">block-stacking duels against bots that think</p>
+        <nav class="tiles">
+          <button class="tile t-vs" data-go="scr-vs"><b>VERSUS</b><small>Duel a bot</small></button>
+          <button class="tile t-solo" data-go="scr-solo"><b>SOLO</b><small>Marathon · Master</small></button>
+          <button class="tile t-spec" data-go="scr-spectate"><b>SPECTATE</b><small>Bot battles · Replays</small></button>
+          <button class="tile t-set" data-go="scr-settings"><b>SETTINGS</b><small>Controls · Audio · Display</small></button>
+          <button class="tile t-help" data-go="scr-help"><b>HOW TO PLAY</b><small>Controls · Garbage · Bots</small></button>
+        </nav>
+        <p class="hint">Arrows / D-pad to choose · Enter / Ⓐ to select · Esc / Ⓑ to go back</p>
+        <p class="device-note">Stackfall plays best with a keyboard or a gamepad.</p>
+      </section>
+
+      <section id="scr-vs" class="screen hidden">
+        <header class="bar"><button class="back" data-back>‹ Back</button><h2>Choose your opponent</h2></header>
+        <div id="vsCards" class="bot-grid"></div>
+      </section>
+
+      <section id="scr-solo" class="screen hidden">
+        <header class="bar"><button class="back" data-back>‹ Back</button><h2>Solo</h2></header>
+        <div class="mode-cards">
+          <button class="mode-card m-marathon" data-solo="marathon">
+            <b>MARATHON</b><span>150 lines. Gravity speeds up every 10 lines.</span><em class="pb" id="pb-marathon"></em>
+          </button>
+          <button class="mode-card m-master" data-solo="master">
+            <b>MASTER</b><span>20G from the first piece. Lock delay tightens. 300 lines.</span><em class="pb" id="pb-master"></em>
+          </button>
+        </div>
+      </section>
+
+      <section id="scr-spectate" class="screen hidden">
+        <header class="bar"><button class="back" data-back>‹ Back</button><h2>Spectate</h2></header>
+        <div class="panels">
+          <div class="panel">
+            <h3>Bot battle</h3>
+            <label>Left <select id="wLeft"></select></label>
+            <label>Right <select id="wRight"></select></label>
+            <button class="big" id="watch">WATCH</button>
+          </div>
+          <div class="panel">
+            <h3>Bot plays solo</h3>
+            <label>Bot <select id="soloBot"></select></label>
+            <label>Mode <select id="soloBotMode"><option value="marathon">Marathon</option><option value="master">Master</option></select></label>
+            <button class="big alt" id="watchSolo">WATCH</button>
+          </div>
+          <div class="panel">
+            <h3>Replays · Titan vs Cold Clear 2</h3>
+            <div id="replayList" class="replays">No replays yet.</div>
+          </div>
+        </div>
+        <div class="options">
           <label>Speed <input type="range" id="speed" min="0.25" max="3" step="0.25" value="1" /> <b id="speedName"></b></label>
-          <label class="check"><input type="checkbox" id="plan" checked /> Show where each bot plans to drop</label>
-        </section>
-        <section class="card">
-          <h3>Replays</h3>
-          <div id="replayList" class="replays">No replays yet.</div>
-        </section>
-        <section class="card">
-          <h3>Handling</h3>
-          <label>DAS <input type="range" id="das" min="0" max="300" step="5" /> <b id="dasName"></b></label>
-          <label>ARR <input type="range" id="arr" min="0" max="100" step="5" /> <b id="arrName"></b></label>
-          <label>Soft drop <input type="range" id="sdf" min="0" max="100" step="5" /> <b id="sdfName"></b></label>
-          <label>SFX <input type="range" id="sfx" min="0" max="1" step="0.05" /> <b id="sfxName"></b></label>
-          <label>Music <input type="range" id="music" min="0" max="1" step="0.05" /> <b id="musicName"></b></label>
-        </section>
+          <label class="check"><input type="checkbox" id="plan" checked /> Show where bots plan to drop</label>
+        </div>
+      </section>
+
+      <section id="scr-settings" class="screen hidden">
+        <header class="bar"><button class="back" data-back>‹ Back</button><h2>Settings</h2></header>
+        <div class="panels">
+          <div class="panel">
+            <h3>Handling</h3>
+            <label>DAS <input type="range" id="das" min="0" max="300" step="5" /> <b id="dasName"></b></label>
+            <label>ARR <input type="range" id="arr" min="0" max="100" step="5" /> <b id="arrName"></b></label>
+            <label>Soft drop <input type="range" id="sdf" min="0" max="100" step="5" /> <b id="sdfName"></b></label>
+            <p class="small">DAS: delay before a held direction repeats. ARR: repeat speed (0 = instant).</p>
+          </div>
+          <div class="panel">
+            <h3>Audio</h3>
+            <label>Effects <input type="range" id="sfx" min="0" max="1" step="0.05" /> <b id="sfxName"></b></label>
+            <label>Music <input type="range" id="music" min="0" max="1" step="0.05" /> <b id="musicName"></b></label>
+          </div>
+          <div class="panel">
+            <h3>Display</h3>
+            <label class="check"><input type="checkbox" id="reduceMotion" /> Reduce motion (no shake, fewer particles)</label>
+            <button class="big alt" id="fullscreen">FULLSCREEN</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="scr-help" class="screen hidden">
+        <header class="bar"><button class="back" data-back>‹ Back</button><h2>How to play</h2></header>
+        <div class="panels">
+          <div class="panel">
+            <h3>Controls</h3>
+            <table class="keys">
+              <tr><td>Move</td><td><kbd>←</kbd> <kbd>→</kbd> · D-pad</td></tr>
+              <tr><td>Soft drop</td><td><kbd>↓</kbd></td></tr>
+              <tr><td>Hard drop</td><td><kbd>Space</kbd> · D-pad ↑</td></tr>
+              <tr><td>Rotate</td><td><kbd>↑</kbd> <kbd>X</kbd> · Ⓐ Ⓨ</td></tr>
+              <tr><td>Rotate back</td><td><kbd>Z</kbd> <kbd>Ctrl</kbd> · Ⓑ Ⓧ</td></tr>
+              <tr><td>Hold</td><td><kbd>C</kbd> <kbd>Shift</kbd> · bumpers</td></tr>
+              <tr><td>Pause</td><td><kbd>Esc</kbd> · Start</td></tr>
+              <tr><td>Retry</td><td><kbd>R</kbd> on the results screen</td></tr>
+            </table>
+          </div>
+          <div class="panel">
+            <h3>Versus basics</h3>
+            <ul class="tips">
+              <li>Clearing lines <b>sends garbage</b> to your opponent; it rises from the bottom of their board.</li>
+              <li>Incoming garbage fills the <b>meter</b> beside your board. Clearing lines first <b>cancels</b> it.</li>
+              <li><b>T-spins</b> and <b>quads</b> hit hardest. Do them back-to-back (<b>B2B</b>) for a bonus.</li>
+              <li>Clears in a row build a <b>combo (REN)</b> for extra garbage.</li>
+              <li>Top out and you're K.O.</li>
+            </ul>
+          </div>
+          <div class="panel">
+            <h3>About</h3>
+            <p class="small">Stackfall is a free, non-commercial fan project. The bots run entirely in your browser. Not affiliated with or endorsed by any game publisher; all trademarks belong to their owners.</p>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div id="pause" class="overlay hidden">
+      <h2 class="big-title">PAUSED</h2>
+      <div class="row">
+        <button class="big" id="resume">RESUME</button>
+        <button class="big alt" id="restart">RESTART</button>
+        <button class="big pink" id="quit">QUIT</button>
       </div>
-      <p class="keys">← → move · ↓ soft drop · Space hard drop · ↑ / X rotate · Z rotate back · C hold · Esc menu · gamepads work too</p>
-      <p class="fine">Stackfall is a free, non-commercial fan project. Not affiliated with or endorsed by any game publisher; all trademarks belong to their owners.</p>
+      <p class="hint">Esc / Start to resume</p>
     </div>
 
     <div id="result" class="overlay hidden">
-      <h2 id="resultText"></h2>
+      <h2 id="resultText" class="big-title"></h2>
       <p id="resultDetail" class="tag"></p>
+      <div id="resultStats" class="stats"></div>
       <div class="row">
-        <button id="again" class="big">REMATCH</button>
-        <button id="toMenu" class="big alt">MENU</button>
+        <button class="big" id="again">REMATCH</button>
+        <button class="big alt" id="toMenu">MENU</button>
       </div>
+      <p class="hint">Enter / R / Ⓐ to play again · Esc / Ⓑ for the menu</p>
     </div>
 
     <div id="loading" class="overlay"><h2>Loading…</h2></div>
