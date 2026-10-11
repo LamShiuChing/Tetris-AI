@@ -16,10 +16,23 @@ const H2: usize = 32;
 pub fn features(b: &Board, b2b: bool, combo: i32, pending: u32, tsd: bool, tst: bool) -> [f32; INPUTS] {
     let mut f = [0.0f32; INPUTS];
     let top = b.rows.iter().position(|&r| r != 0).unwrap_or(HEIGHT as usize);
+    // One pass top-down: heights from each column's first filled cell, holes = empty cells under it.
+    let (mut covered, mut holes) = (0u16, [0u32; WIDTH as usize]);
+    for (y, &row) in b.rows.iter().enumerate().skip(top) {
+        let mut new = row & !covered;
+        while new != 0 {
+            f[new.trailing_zeros() as usize] = (HEIGHT as usize - y) as f32 / 20.0;
+            new &= new - 1;
+        }
+        covered |= row;
+        let mut gaps = covered & !row;
+        while gaps != 0 {
+            holes[gaps.trailing_zeros() as usize] += 1;
+            gaps &= gaps - 1;
+        }
+    }
     for x in 0..WIDTH as usize {
-        let col_top = (0..HEIGHT as usize).find(|&y| b.rows[y] >> x & 1 != 0).unwrap_or(HEIGHT as usize);
-        f[x] = (HEIGHT as usize - col_top) as f32 / 20.0;
-        f[10 + x] = (col_top..HEIGHT as usize).filter(|&y| b.rows[y] >> x & 1 == 0).count() as f32 / 5.0;
+        f[10 + x] = holes[x] as f32 / 5.0;
     }
     for k in 0..WINDOW {
         let row = b.rows.get(top + k).copied().unwrap_or(0x3FF);
@@ -62,17 +75,28 @@ impl Net {
     pub fn eval(&self, x: &[f32; INPUTS]) -> f32 {
         let mut h1 = [0.0f32; H1];
         for (j, h) in h1.iter_mut().enumerate() {
-            let w = &self.w1[j * INPUTS..(j + 1) * INPUTS];
-            *h = (self.b1[j] + w.iter().zip(x).map(|(a, b)| a * b).sum::<f32>()).max(0.0);
+            *h = (self.b1[j] + dot(&self.w1[j * INPUTS..(j + 1) * INPUTS], x)).max(0.0);
         }
         let mut out = self.b3;
         for j in 0..H2 {
-            let w = &self.w2[j * H1..(j + 1) * H1];
-            let h2 = (self.b2[j] + w.iter().zip(&h1).map(|(a, b)| a * b).sum::<f32>()).max(0.0);
-            out += self.w3[j] * h2;
+            out += self.w3[j] * (self.b2[j] + dot(&self.w2[j * H1..(j + 1) * H1], &h1)).max(0.0);
         }
         out * self.scale
     }
+}
+
+/// Dot product with 8 independent running sums, so the compiler can use 8-wide vector math (a
+/// plain `.sum()` must add in order, which blocks that).
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    let mut acc = [0.0f32; 8];
+    let (ca, cb) = (a.chunks_exact(8), b.chunks_exact(8));
+    let tail: f32 = ca.remainder().iter().zip(cb.remainder()).map(|(x, y)| x * y).sum();
+    for (x, y) in ca.zip(cb) {
+        for k in 0..8 {
+            acc[k] += x[k] * y[k];
+        }
+    }
+    acc.iter().sum::<f32>() + tail
 }
 
 /// The embedded value net, or None until one has been trained (nets/value.bin is empty).
@@ -98,6 +122,13 @@ mod tests {
             tall.rows[y] = 0x3FF & !(1 << (y % 10));
         }
         let (empty, high) = (net.eval(&features(&Board::default(), false, -1, 0, false, false)), net.eval(&features(&tall, false, -1, 6, false, false)));
+        // The fast feature pass must give the same heights/holes as a cell-by-cell count.
+        let f = features(&tall, false, -1, 6, false, false);
+        for x in 0..10 {
+            let col_top = (0..40).find(|&y| tall.rows[y] >> x & 1 != 0).unwrap_or(40);
+            assert_eq!(f[x], (40 - col_top) as f32 / 20.0);
+            assert_eq!(f[10 + x], (col_top..40).filter(|&y| tall.rows[y] >> x & 1 == 0).count() as f32 / 5.0);
+        }
         assert!(empty.is_finite() && high.is_finite());
         assert_ne!(empty, high);
     }

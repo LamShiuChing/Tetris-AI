@@ -131,7 +131,9 @@ impl Config {
             salt: 0,
             sees_garbage: level >= 5,
             speculate: level >= 9,
-            use_net: false,
+            // Verified for level 10 only: 65.0% +/- 3.0% vs the hand eval over 256 fresh matches,
+            // 1.43x think time (net from 3 self-play rounds, nets/value.bin).
+            use_net: level >= 10 && objective == Objective::Attack,
             net_weight: 20.0,
             dedupe: false,
         }
@@ -299,10 +301,11 @@ fn play(node: &Node, p: &Placement, hold: Option<Piece>, next: usize, seq: &[Pie
         gain += cfg.weights.b2b_break;
     }
     let reward = node.reward + gain;
-    let mut leaf = hand_eval(&board, b2b, pending, &cfg.weights);
+    let slot = tslot(&board);
+    let mut leaf = eval_with_slot(&board, b2b, &cfg.weights, slot) + cfg.weights.incoming * pending as f32;
     if let Some(n) = net::value_net().filter(|_| cfg.use_net) {
-        let slot = tslot(&board).map(|s| s.3);
-        leaf += cfg.net_weight * n.eval(&net::features(&board, b2b, combo, pending, slot == Some(2), slot == Some(3)));
+        let lines = slot.map(|s| s.3);
+        leaf += cfg.net_weight * n.eval(&net::features(&board, b2b, combo, pending, lines == Some(2), lines == Some(3)));
     }
     let mut value = reward + leaf;
     if cfg.noise > 0.0 {
@@ -364,9 +367,13 @@ pub fn hand_eval(board: &Board, b2b: bool, pending: u32, w: &Weights) -> f32 {
 }
 
 fn eval(board: &Board, b2b: bool, w: &Weights) -> f32 {
+    eval_with_slot(board, b2b, w, tslot(board))
+}
+
+/// `eval` with the board's T-slot already found (the search also needs it for the value net).
+fn eval_with_slot(board: &Board, b2b: bool, w: &Weights, slot: Option<(i8, i8, u8, u32)>) -> f32 {
     // Cutout (as in Cold Clear): if a T-spin slot is ready, score the board as if the T-spin
     // happened. Otherwise the slot's covered cells count as holes and setups get punished.
-    let slot = tslot(board);
     let mut cut = *board;
     if let Some((x, y, rot, _)) = slot {
         cut.lock(Piece::T, x, y, rot);

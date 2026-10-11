@@ -15,6 +15,11 @@ fn main() {
         if std::env::var("NO_SPECULATE").is_ok() {
             cfg.speculate = false;
         }
+        // NET_WEIGHT=w: level 10 with the value net blended in.
+        if let Ok(w) = std::env::var("NET_WEIGHT") {
+            cfg.use_net = true;
+            cfg.net_weight = w.parse().unwrap();
+        }
         let t = Instant::now();
         let mut pieces = 0;
         for seed in 0..3 {

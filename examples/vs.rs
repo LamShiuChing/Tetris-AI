@@ -21,6 +21,11 @@ fn configs(variant: &str, width: usize) -> [(&'static str, Config); 2] {
     }
 }
 
+/// `SEED0` env var, default 50000: change it for confirmation runs on seeds never used to pick a candidate.
+fn seed0() -> u64 {
+    std::env::var("SEED0").map_or(50_000, |v| v.parse().unwrap())
+}
+
 /// `NET_WEIGHT` env var, default 20.
 fn net_weight() -> f32 {
     std::env::var("NET_WEIGHT").map_or(20.0, |v| v.parse().unwrap())
@@ -42,7 +47,7 @@ fn main() {
         let hs: Vec<_> = (0..seeds * 2)
             .map(|m| {
                 sc.spawn(move || {
-                    let seed = 50_000 + m / 2;
+                    let seed = seed0() + m / 2;
                     if m % 2 == 0 {
                         play_match([a, b], seed, MAX_PIECES)
                     } else {
