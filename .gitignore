@@ -9,3 +9,7 @@ nets/gen*
 /external
 video/
 __pycache__/
+/ppt2/lib
+/ppt2/bin
+/ppt2/obj
+/ppt2/dist

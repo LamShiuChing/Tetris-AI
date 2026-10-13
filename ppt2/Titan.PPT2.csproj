@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Forked from Zetris.PPT (github.com/ZetrisAI/Zetris, BSD-3, see LICENSE-Zetris). Build with build.ps1:
+     binary dependencies come from the official Zetris release zip into lib\ (not in the repo). -->
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Release</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">x64</Platform>
+    <ProjectGuid>{447E38C7-741F-4815-9C4F-6EFCBE7C2130}</ProjectGuid>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>Zetris.PPT</RootNamespace>
+    <AssemblyName>TitanPPT2</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <ProjectTypeGuids>{60dc8134-eba5-43b8-bcc9-bb4bc16c2548};{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}</ProjectTypeGuids>
+    <PlatformTarget>x64</PlatformTarget>
+    <Optimize>true</Optimize>
+    <DebugType>pdbonly</DebugType>
+    <DefineConstants>TRACE;VERBOSE</DefineConstants>
+    <OutputPath>bin\</OutputPath>
+    <ApplicationIcon>icon.ico</ApplicationIcon>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="ControlzEx"><HintPath>lib\ControlzEx.dll</HintPath></Reference>
+    <Reference Include="MahApps.Metro"><HintPath>lib\MahApps.Metro.dll</HintPath></Reference>
+    <Reference Include="System.Windows.Interactivity"><HintPath>lib\System.Windows.Interactivity.dll</HintPath></Reference>
+    <Reference Include="ScpDriverInterface"><HintPath>lib\ScpDriverInterface.dll</HintPath></Reference>
+    <Reference Include="Zetris.PPT.Memory"><HintPath>lib\Zetris.PPT.Memory.dll</HintPath></Reference>
+    <Reference Include="ProcessMemory"><HintPath>lib\ProcessMemory.dll</HintPath></Reference>
+    <Reference Include="MisaMinoNET"><HintPath>lib\MisaMinoNET.dll</HintPath></Reference>
+    <Reference Include="PerfectClearNET"><HintPath>lib\PerfectClearNET.dll</HintPath></Reference>
+    <Reference Include="PresentationFramework.Aero2" />
+    <Reference Include="Microsoft.VisualBasic" />
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Xml" />
+    <Reference Include="System.Xaml" />
+    <Reference Include="WindowsBase" />
+    <Reference Include="PresentationCore" />
+    <Reference Include="PresentationFramework" />
+  </ItemGroup>
+  <ItemGroup>
+    <ApplicationDefinition Include="App.xaml"><Generator>MSBuild:Compile</Generator></ApplicationDefinition>
+    <Page Include="Dial.xaml"><Generator>MSBuild:Compile</Generator></Page>
+    <Page Include="Error.xaml"><Generator>MSBuild:Compile</Generator></Page>
+    <Page Include="GamepadIndexWindow.xaml"><Generator>MSBuild:Compile</Generator></Page>
+    <Page Include="GamepadPanel.xaml"><Generator>MSBuild:Compile</Generator></Page>
+    <Page Include="UI.xaml"><Generator>MSBuild:Compile</Generator></Page>
+    <Compile Include="App.xaml.cs"><DependentUpon>App.xaml</DependentUpon></Compile>
+    <Compile Include="Dial.xaml.cs"><DependentUpon>Dial.xaml</DependentUpon></Compile>
+    <Compile Include="Error.xaml.cs"><DependentUpon>Error.xaml</DependentUpon></Compile>
+    <Compile Include="GamepadIndexWindow.xaml.cs"><DependentUpon>GamepadIndexWindow.xaml</DependentUpon></Compile>
+    <Compile Include="GamepadPanel.xaml.cs"><DependentUpon>GamepadPanel.xaml</DependentUpon></Compile>
+    <Compile Include="UI.xaml.cs"><DependentUpon>UI.xaml</DependentUpon></Compile>
+    <Compile Include="Binary.cs" />
+    <Compile Include="PPTBot.cs" />
+    <Compile Include="Preferences.cs" />
+    <Compile Include="Titan.cs" />
+    <Compile Include="Zetris\Bot.cs" />
+    <Compile Include="Zetris\IUI.cs" />
+    <Compile Include="Zetris\LogHelper.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <None Include="App.config" />
+    <Resource Include="icon.ico" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

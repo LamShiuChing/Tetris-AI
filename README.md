@@ -102,9 +102,23 @@ speculation placements). At the shipped beam 256: ~110 ms natively, ~190 ms in t
 Cold Clear 2 isn't included: clone and build it into `external/cold-clear-2`
 (https://github.com/MinusKelvin/cold-clear-2, MIT/Apache-2.0) to run `vs_coldclear`.
 
+## Puyo Puyo Tetris 2 (PC, offline)
+
+`ppt2/` is **Titan for PPT2**, a fork of [Zetris](https://github.com/ZetrisAI/Zetris) (BSD-3, `ppt2/LICENSE-Zetris`):
+Zetris reads the game's memory and presses a virtual Xbox pad; the engine DLL (`src/ppt.rs`) stands in
+for its MisaMino AI. The app picks the bot (Titan at strength 1-10, or a personality), shows Titan's plan,
+and never plays online. Titan sees only the 5 previews the game shows, and Zetris's perfect clear finder is off.
+
+1. `powershell -File ppt2/build.ps1` (Rust + Visual Studio 2022 with the .NET Framework 4.8 targeting pack).
+   It downloads the Zetris 38 release for the parts that aren't open source or ours (memory reader, UI
+   libraries, virtual gamepad driver) into `ppt2/lib`, and assembles `ppt2/dist`.
+2. Run `ppt2/dist/TitanPPT2.exe`; the first run installs the SCP virtual bus driver (admin prompt).
+3. Watch it in Solo Arcade (Tetris), or play it in Multiplayer Arcade Versus ("Versus Player" = its slot).
+
 ## Credits
 
 - Setup shapes (opener and T-spin stage boards) come from the Hard Drop wiki, https://harddrop.com/wiki/ ;
   each kept shape is re-verified in this engine. The raw research catalogs stay out of the repo.
 - Cold Clear 2 by MinusKelvin, used only as an external opponent for benchmarking.
 - The first harness for the bot was MonochromeRush (a separate game).
+- Zetris by mat1jaczyyy (BSD-3) drives Puyo Puyo Tetris 2; not included, downloaded separately.

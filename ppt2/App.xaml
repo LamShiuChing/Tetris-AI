@@ -1,0 +1,50 @@
+<Application x:Class="Zetris.PPT.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:Controls="http://metro.mahapps.com/winfx/xaml/controls"
+             StartupUri="UI.xaml"
+             Startup="Main" Exit="Exiting">
+    
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/MahApps.Metro;component/Styles/Controls.xaml" />
+                <ResourceDictionary Source="pack://application:,,,/MahApps.Metro;component/Styles/Fonts.xaml" />
+                <ResourceDictionary Source="pack://application:,,,/MahApps.Metro;component/Styles/Colors.xaml" />
+                <ResourceDictionary Source="pack://application:,,,/MahApps.Metro;component/Styles/Accents/BaseDark.xaml" />
+                <ResourceDictionary Source="pack://application:,,,/MahApps.Metro;component/Styles/Accents/Red.xaml" />
+
+                <!-- Stackfall's grape over MahApps' red accent -->
+                <ResourceDictionary>
+                    <Color x:Key="HighlightColor">#FF7B4FE0</Color>
+                    <Color x:Key="AccentBaseColor">#FF9B6BFF</Color>
+                    <Color x:Key="AccentColor">#CC9B6BFF</Color>
+                    <Color x:Key="AccentColor2">#999B6BFF</Color>
+                    <Color x:Key="AccentColor3">#669B6BFF</Color>
+                    <Color x:Key="AccentColor4">#339B6BFF</Color>
+                    <SolidColorBrush x:Key="HighlightBrush" Color="{StaticResource HighlightColor}" />
+                    <SolidColorBrush x:Key="AccentBaseColorBrush" Color="{StaticResource AccentBaseColor}" />
+                    <SolidColorBrush x:Key="AccentColorBrush" Color="{StaticResource AccentColor}" />
+                    <SolidColorBrush x:Key="AccentColorBrush2" Color="{StaticResource AccentColor2}" />
+                    <SolidColorBrush x:Key="AccentColorBrush3" Color="{StaticResource AccentColor3}" />
+                    <SolidColorBrush x:Key="AccentColorBrush4" Color="{StaticResource AccentColor4}" />
+                    <SolidColorBrush x:Key="WindowTitleColorBrush" Color="{StaticResource AccentColor}" />
+                    <SolidColorBrush x:Key="CheckmarkFill" Color="{StaticResource AccentColor}" />
+                    <SolidColorBrush x:Key="RightArrowFill" Color="{StaticResource AccentColor}" />
+                </ResourceDictionary>
+
+                <ResourceDictionary>
+                    <Style x:Key="ZetrisWindow" TargetType="Controls:MetroWindow">
+                        <Setter Property="TitleCharacterCasing" Value="Normal" />
+                        <Setter Property="ResizeMode" Value="NoResize" />
+                        <Setter Property="BorderThickness" Value="0" />
+                        <Setter Property="Background" Value="#0B0820" />
+                        <Setter Property="Foreground" Value="#F4F0FF" />
+                        <Setter Property="GlowBrush" Value="{DynamicResource AccentColorBrush}" />
+                        <Setter Property="SizeToContent" Value="Height" />
+                    </Style>
+                </ResourceDictionary>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

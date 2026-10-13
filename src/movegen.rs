@@ -47,13 +47,18 @@ struct State {
 /// BFS over every input sequence from spawn; one result per distinct (cells, spin), each with the
 /// inputs that reach it.
 pub fn find_placements(board: &Board, piece: Piece, rules: &Rules) -> Vec<Placement> {
-    search(board, piece, rules, true)
+    search(board, piece, rules, (rules.spawn.0, rules.spawn.1, 0), true)
+}
+
+/// `find_placements` for a piece already at `(x, y, rot)` instead of spawn.
+pub fn find_placements_from(board: &Board, piece: Piece, rules: &Rules, start: (i8, i8, u8)) -> Vec<Placement> {
+    search(board, piece, rules, start, true)
 }
 
 /// `find_placements` without the input sequences (left empty): the search only needs those for
 /// the move it actually plays, and building them for every node is most of the cost.
 pub fn find_placements_fast(board: &Board, piece: Piece, rules: &Rules) -> Vec<Placement> {
-    search(board, piece, rules, false)
+    search(board, piece, rules, (rules.spawn.0, rules.spawn.1, 0), false)
 }
 
 // Every reachable state fits in a small array: pivot x in -3..13, y in -4..40, 4 rotations,
@@ -68,13 +73,12 @@ fn index(s: State) -> Option<usize> {
         .then(|| (((x as usize * YS + y as usize) * 4 + s.rot as usize) * 2) + s.rotated as usize)
 }
 
-fn search(board: &Board, piece: Piece, rules: &Rules, want_inputs: bool) -> Vec<Placement> {
-    let (x, y) = rules.spawn;
-    if board.collides(piece, x, y, 0) {
+fn search(board: &Board, piece: Piece, rules: &Rules, (x, y, rot): (i8, i8, u8), want_inputs: bool) -> Vec<Placement> {
+    if board.collides(piece, x, y, rot) {
         return vec![];
     }
     // ponytail: ignores IRS and the 15 lock-reset cap; BFS paths are short. Add both if 20G paths get cut off.
-    let start = settle(board, piece, rules.gravity, State { x, y, rot: 0, rotated: false });
+    let start = settle(board, piece, rules.gravity, State { x, y, rot, rotated: false });
     let Some(start_i) = index(start) else { return vec![] };
     let mut seen = [false; STATES];
     // Only filled in when `want_inputs`: (parent state index, input that led here).
